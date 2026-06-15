@@ -166,7 +166,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-workers", type=int, default=1)
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--headless", action="store_true", help="Run Chrome headless")
-    parser.add_argument("--batch-limit", type=int, default=1, help="How many fetch/process batches to run before exit")
+    parser.add_argument(
+        "--batch-limit",
+        type=int,
+        default=0,
+        help="How many fetch/process batches to run before exit; 0 means run until pending is empty",
+    )
     return parser.parse_args()
 
 
@@ -174,7 +179,10 @@ def main() -> None:
     args = parse_args()
     started_at = time.time()
     done = 0
-    for batch_number in range(1, max(1, args.batch_limit) + 1):
+    batch_number = 1
+    while True:
+        if args.batch_limit > 0 and batch_number > args.batch_limit:
+            break
         rows = fetch_pending_listing_urls(limit=args.limit)
         if not rows:
             if done == 0:
@@ -207,6 +215,7 @@ def main() -> None:
                     print(f"FAIL {listing_id} {url}: {exc}")
                 finally:
                     done += 1
+        batch_number += 1
 
     print(f"Processed {done} listings in {time.time() - started_at:.1f}s")
 

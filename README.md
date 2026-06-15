@@ -70,13 +70,13 @@ PYTHONPATH=src python3 scripts/init_db.py
 Discover listing URLs:
 
 ```bash
-PYTHONPATH=src python3 -m hanoi_real_estate.scrapers.discover_listings --max-pages 2
+PYTHONPATH=src python3 -m hanoi_real_estate.scrapers.discover_listings --max-pages 200
 ```
 
 Scrape listing details in resumable batches:
 
 ```bash
-PYTHONPATH=src python3 -m hanoi_real_estate.scrapers.scrape_listing_details --limit 10 --max-workers 1 --batch-limit 1
+PYTHONPATH=src python3 -m hanoi_real_estate.scrapers.scrape_listing_details --limit 0 --max-workers 1 --batch-limit 5
 ```
 
 Import legacy href data:

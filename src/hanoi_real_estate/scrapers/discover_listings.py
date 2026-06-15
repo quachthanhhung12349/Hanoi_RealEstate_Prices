@@ -57,9 +57,9 @@ def discover_all(
 
             if recent_listing_ids and page_listing_ids:
                 overlap_count = sum(1 for listing_id in page_listing_ids if listing_id in recent_listing_ids)
-                if overlap_count == len(page_listing_ids):
+                if overlap_count > 0:
                     print(
-                        "Stopping discovery early because this page contains only recently scraped listings."
+                        "Stopping discovery early because this page has reached already scraped listings."
                     )
                     break
 

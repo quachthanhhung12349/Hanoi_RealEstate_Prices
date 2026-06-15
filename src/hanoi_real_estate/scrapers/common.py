@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import threading
 import time
 
 import undetected_chromedriver as uc
@@ -10,6 +11,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
 from ..config import CHROME_BINARY
+
+# undetected_chromedriver copies a single chromedriver.exe to a fixed path on
+# Windows; concurrent calls race to rename that file and raise WinError 32/183.
+_driver_creation_lock = threading.Lock()
 
 
 def is_rate_limited_error(exc: Exception) -> bool:
@@ -27,7 +32,8 @@ def create_driver(headless: bool = False):
     if headless:
         options.add_argument("--headless=new")
     options.page_load_strategy = "normal"
-    return uc.Chrome(options=options)
+    with _driver_creation_lock:
+        return uc.Chrome(options=options)
 
 
 def sleep_jitter(min_seconds: float = 2.0, max_seconds: float = 5.0) -> None:

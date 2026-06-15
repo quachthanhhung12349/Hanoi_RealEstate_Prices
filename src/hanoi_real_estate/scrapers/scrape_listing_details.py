@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from selenium.webdriver.common.by import By
+from tqdm import tqdm
 
 from ..parsers import clean_text, normalize_detail_payload
 from ..repository import fetch_pending_listing_urls, mark_listing_failed, save_listing_detail
@@ -157,7 +158,10 @@ def scrape_one(
                 time.sleep(backoff)
         raise RuntimeError(f"Failed to scrape listing after {max_retries} attempts: {url}")
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -180,42 +184,59 @@ def main() -> None:
     started_at = time.time()
     done = 0
     batch_number = 1
-    while True:
-        if args.batch_limit > 0 and batch_number > args.batch_limit:
-            break
-        rows = fetch_pending_listing_urls(limit=args.limit)
-        if not rows:
-            if done == 0:
-                print("No pending listings to scrape.")
-            break
+    overall_bar = tqdm(unit="listing", desc="Total", dynamic_ncols=True)
+    try:
+        while True:
+            if args.batch_limit > 0 and batch_number > args.batch_limit:
+                break
+            rows = fetch_pending_listing_urls(limit=args.limit)
+            if not rows:
+                if done == 0:
+                    print("No pending listings to scrape.")
+                break
 
-        print(f"Starting detail batch {batch_number} with {len(rows)} listings")
-        with ThreadPoolExecutor(max_workers=max(1, args.max_workers)) as executor:
-            future_to_row = {
-                executor.submit(
-                    scrape_one,
-                    row["url"],
-                    worker_id=index,
-                    max_retries=args.max_retries,
-                    headless=args.headless,
-                ): row
-                for index, row in enumerate(rows)
-            }
-            for future in as_completed(future_to_row):
-                row = future_to_row[future]
-                listing_id = row["listing_id"]
-                url = row["url"]
-                try:
-                    raw = future.result()
-                    payload = normalize_detail_payload(raw)
-                    save_listing_detail(payload)
-                    print(f"OK {listing_id} {url}")
-                except Exception as exc:
-                    mark_listing_failed(listing_id, type(exc).__name__, str(exc))
-                    print(f"FAIL {listing_id} {url}: {exc}")
-                finally:
-                    done += 1
-        batch_number += 1
+            ok = fail = 0
+            with ThreadPoolExecutor(max_workers=max(1, args.max_workers)) as executor:
+                future_to_row = {
+                    executor.submit(
+                        scrape_one,
+                        row["url"],
+                        worker_id=index,
+                        max_retries=args.max_retries,
+                        headless=args.headless,
+                    ): row
+                    for index, row in enumerate(rows)
+                }
+                with tqdm(
+                    as_completed(future_to_row),
+                    total=len(rows),
+                    desc=f"Batch {batch_number}",
+                    unit="listing",
+                    dynamic_ncols=True,
+                    leave=True,
+                ) as batch_bar:
+                    for future in batch_bar:
+                        row = future_to_row[future]
+                        listing_id = row["listing_id"]
+                        url = row["url"]
+                        try:
+                            raw = future.result()
+                            payload = normalize_detail_payload(raw)
+                            save_listing_detail(payload)
+                            ok += 1
+                            tqdm.write(f"OK {listing_id} {url}")
+                        except Exception as exc:
+                            mark_listing_failed(listing_id, type(exc).__name__, str(exc))
+                            fail += 1
+                            tqdm.write(f"FAIL {listing_id} {url}: {exc}")
+                        finally:
+                            done += 1
+                            overall_bar.update(1)
+                            batch_bar.set_postfix(ok=ok, fail=fail)
+                            overall_bar.set_postfix(ok=ok, fail=fail, batch=batch_number)
+            batch_number += 1
+    finally:
+        overall_bar.close()
 
     print(f"Processed {done} listings in {time.time() - started_at:.1f}s")
 

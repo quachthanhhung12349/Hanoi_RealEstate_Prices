@@ -4,6 +4,7 @@ import argparse
 import time
 
 from selenium.webdriver.common.by import By
+from tqdm import tqdm
 
 from ..config import DEFAULT_DISCOVER_URL, DEFAULT_SEARCH_CATEGORY, HREFS_PATH
 from ..parsers import extract_listing_id, infer_listing_type_from_url
@@ -41,37 +42,46 @@ def discover_all(
     recent_listing_ids = fetch_recent_scraped_listing_ids(limit=recent_window) if stop_when_reaching_recent else set()
     page = 1
     try:
-        while True:
-            if max_pages is not None and page > max_pages:
-                break
-
-            url = build_page_url(page, base_url)
-            print(f"Discovering page {page}: {url}")
-            hrefs = get_hrefs_from_page(driver, url)
-            page_listing_ids = [extract_listing_id(href) for href in hrefs]
-            page_listing_ids = [listing_id for listing_id in page_listing_ids if listing_id]
-            before = len(all_hrefs)
-            all_hrefs.extend(hrefs)
-            all_hrefs = list(dict.fromkeys(all_hrefs))
-            print(f"Collected {len(all_hrefs) - before} new urls on page {page}")
-
-            if recent_listing_ids and page_listing_ids:
-                overlap_count = sum(1 for listing_id in page_listing_ids if listing_id in recent_listing_ids)
-                if overlap_count > 0:
-                    print(
-                        "Stopping discovery early because this page has reached already scraped listings."
-                    )
+        with tqdm(
+            total=max_pages,
+            desc="Discovering pages",
+            unit="page",
+            dynamic_ncols=True,
+        ) as pbar:
+            while True:
+                if max_pages is not None and page > max_pages:
                     break
 
-            next_page = driver.find_elements(
-                By.CSS_SELECTOR,
-                "a.re__pagination-icon:not(.re__pagination-icon--no-effect)",
-            )
-            if not next_page:
-                break
+                url = build_page_url(page, base_url)
+                tqdm.write(f"Discovering page {page}: {url}")
+                hrefs = get_hrefs_from_page(driver, url)
+                page_listing_ids = [extract_listing_id(href) for href in hrefs]
+                page_listing_ids = [listing_id for listing_id in page_listing_ids if listing_id]
+                before = len(all_hrefs)
+                all_hrefs.extend(hrefs)
+                all_hrefs = list(dict.fromkeys(all_hrefs))
+                new_count = len(all_hrefs) - before
+                tqdm.write(f"Collected {new_count} new urls on page {page}")
+                pbar.update(1)
+                pbar.set_postfix(urls=len(all_hrefs), new=new_count)
 
-            page += 1
-            sleep_jitter(2.0, 4.0)
+                if recent_listing_ids and page_listing_ids:
+                    overlap_count = sum(1 for listing_id in page_listing_ids if listing_id in recent_listing_ids)
+                    if overlap_count > 0:
+                        tqdm.write(
+                            "Stopping discovery early because this page has reached already scraped listings."
+                        )
+                        break
+
+                next_page = driver.find_elements(
+                    By.CSS_SELECTOR,
+                    "a.re__pagination-icon:not(.re__pagination-icon--no-effect)",
+                )
+                if not next_page:
+                    break
+
+                page += 1
+                sleep_jitter(2.0, 4.0)
     finally:
         driver.quit()
 

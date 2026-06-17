@@ -4,6 +4,7 @@ import os
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT_DIR / "data"
+GIS_DATA_DIR = DATA_DIR / "gis"
 LOG_DIR = ROOT_DIR / "logs"
 SQL_DIR = ROOT_DIR / "sql"
 DB_PATH = DATA_DIR / "bds_live.sqlite3"
@@ -28,4 +29,3 @@ else:
 # Optional: Add a check to ensure the file actually exists
 if not os.path.exists(CHROME_BINARY):
     print(f"Warning: Chrome binary not found at {CHROME_BINARY}. Please verify the installation path.")
-

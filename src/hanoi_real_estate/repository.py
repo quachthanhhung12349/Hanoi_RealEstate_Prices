@@ -484,6 +484,40 @@ def fetch_cached_gis_district_price() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def replace_gis_district_choropleth(geojson_payload: dict[str, Any]) -> None:
+    if not is_postgres_backend():
+        raise RuntimeError("GIS cache persistence is only supported for PostgreSQL deployments.")
+
+    payload_text = json.dumps(geojson_payload, ensure_ascii=True)
+    with get_engine().begin() as conn:
+        conn.execute(text("DELETE FROM gis_district_choropleth"))
+        conn.execute(
+            text(_POSTGRES_INSERT_GIS_DISTRICT_CHOROPLETH_SQL),
+            {"geojson": payload_text},
+        )
+
+
+def fetch_cached_gis_district_choropleth() -> dict[str, Any] | None:
+    if not is_postgres_backend():
+        return None
+    rows = fetch_all_rows(
+        """
+        SELECT geojson
+        FROM gis_district_choropleth
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        """
+    )
+    if not rows:
+        return None
+
+    raw_payload = rows[0]["geojson"]
+    if not isinstance(raw_payload, str) or not raw_payload.strip():
+        return None
+    payload = json.loads(raw_payload)
+    return payload if isinstance(payload, dict) else None
+
+
 def _prepare_seed_record(record: dict[str, str | None]) -> dict[str, str | None]:
     return {
         "listing_id": record["listing_id"],
@@ -994,6 +1028,18 @@ VALUES (
     :district_name_normalized,
     :avg_price_per_m2,
     :listing_count,
+    CURRENT_TIMESTAMP
+)
+"""
+
+
+_POSTGRES_INSERT_GIS_DISTRICT_CHOROPLETH_SQL = """
+INSERT INTO gis_district_choropleth (
+    geojson,
+    updated_at
+)
+VALUES (
+    :geojson,
     CURRENT_TIMESTAMP
 )
 """

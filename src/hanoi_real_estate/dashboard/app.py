@@ -19,9 +19,12 @@ from hanoi_real_estate.db import get_dashboard_data_version
 from hanoi_real_estate.gis import (
     build_boundary_validation_dataframe,
     build_district_validation_dataframe,
+    build_district_price_geojson,
     build_district_price_dataframe,
+    build_interpolated_price_surface_dataframe,
     build_pydeck_point_dataframe,
     get_hanoi_center_view_state,
+    load_cached_gis_district_choropleth,
     load_cached_gis_district_price_dataframe,
     load_cached_gis_price_surface_dataframe,
     load_hanoi_boundary_geojson,
@@ -56,6 +59,7 @@ def load_data(
     pd.DataFrame,
     dict,
     dict,
+    dict,
 ]:
     try:
         base_df = load_dashboard_dataframe(active_only=active_only)
@@ -66,15 +70,19 @@ def load_data(
         gis_surface_df = load_cached_gis_price_surface_dataframe()
         gis_district_price_df = load_cached_gis_district_price_dataframe()
         if gis_surface_df.empty:
-            gis_surface_df = pd.DataFrame(
-                columns=["Longitude", "Latitude", "predicted_price_per_m2", "cell_polygon"]
-            )
+            gis_surface_df = build_interpolated_price_surface_dataframe(base_df)
         if gis_district_price_df.empty:
             gis_district_price_df = build_district_price_dataframe(base_df)
         gis_validation_df = build_boundary_validation_dataframe(base_df)
         gis_district_validation_df = build_district_validation_dataframe(base_df)
         hanoi_boundary_geojson = load_hanoi_boundary_geojson()
         hanoi_districts_geojson = load_hanoi_districts_geojson()
+        district_price_geojson = load_cached_gis_district_choropleth()
+        if not district_price_geojson.get("features"):
+            district_price_geojson = build_district_price_geojson(
+                hanoi_districts_geojson,
+                gis_district_price_df,
+            )
     except (sqlite3.Error, SQLAlchemyError, OSError, ValueError, KeyError) as exc:
         raise DashboardDataError(_friendly_data_error(exc)) from exc
     return (
@@ -87,6 +95,7 @@ def load_data(
         gis_district_price_df,
         gis_validation_df,
         gis_district_validation_df,
+        district_price_geojson,
         hanoi_boundary_geojson,
         hanoi_districts_geojson,
     )
@@ -256,6 +265,7 @@ def render_gis_tab(
     gis_district_price_df: pd.DataFrame,
     gis_validation_df: pd.DataFrame,
     gis_district_validation_df: pd.DataFrame,
+    district_price_geojson: dict,
     hanoi_boundary_geojson: dict,
     hanoi_districts_geojson: dict,
 ) -> None:
@@ -311,18 +321,13 @@ def render_gis_tab(
     surface_df = gis_surface_df.copy()
     if not surface_df.empty:
         surface_df["fill_color"] = surface_df["predicted_price_per_m2"].apply(_price_to_color)
-        surface_df["surface_polygon"] = surface_df["cell_polygon"].apply(lambda ring: [ring])
-    district_geojson_data = _build_district_price_geojson(
-        hanoi_districts_geojson,
-        gis_district_price_df,
-    )
     layers = [geojson_layer, district_layer]
     if layer_mode == "Interpolated price surface" and not surface_df.empty:
         layers.append(
             pdk.Layer(
                 "PolygonLayer",
                 surface_df,
-                get_polygon="surface_polygon",
+                get_polygon="cell_polygon",
                 get_fill_color="fill_color",
                 get_line_color=[255, 255, 255, 0],
                 stroked=False,
@@ -331,11 +336,11 @@ def render_gis_tab(
                 pickable=True,
             )
         )
-    elif layer_mode == "District average" and district_geojson_data["features"]:
+    elif layer_mode == "District average" and district_price_geojson["features"]:
         layers.append(
             pdk.Layer(
                 "GeoJsonLayer",
-                district_geojson_data,
+                district_price_geojson,
                 stroked=True,
                 filled=True,
                 get_fill_color="properties.fill_color",
@@ -426,6 +431,7 @@ def main() -> None:
             gis_district_price_df,
             gis_validation_df,
             gis_district_validation_df,
+            district_price_geojson,
             hanoi_boundary_geojson,
             hanoi_districts_geojson,
         ) = load_data(active_only=active_only, data_version=data_version)
@@ -481,6 +487,7 @@ def main() -> None:
             filtered_gis_district_price,
             filtered_gis_validation,
             filtered_gis_district_validation,
+            district_price_geojson,
             hanoi_boundary_geojson,
             hanoi_districts_geojson,
         )
@@ -635,40 +642,6 @@ def render_price_legend(source_df: pd.DataFrame, value_column: str, layer_mode: 
     st.caption(
         f"{layer_mode}: approximately {min_value:,.1f} to {max_value:,.1f} million VND/m² across the visible price surface."
     )
-
-
-def _build_district_price_geojson(district_geojson: dict, district_price_df: pd.DataFrame) -> dict:
-    if not district_geojson.get("features"):
-        return {"type": "FeatureCollection", "features": []}
-
-    lookup = {}
-    if not district_price_df.empty:
-        for _, row in district_price_df.iterrows():
-            lookup[str(row["district_osm"])] = {
-                "avg_price_per_m2": float(row["avg_price_per_m2"]),
-                "listing_count": int(row["listing_count"]),
-                "fill_color": _price_to_color(row["avg_price_per_m2"]),
-            }
-
-    features = []
-    for feature in district_geojson.get("features", []):
-        properties = dict(feature.get("properties", {}))
-        district_name = str(properties.get("district_name") or properties.get("name") or "")
-        stats = lookup.get(district_name)
-        if stats:
-            properties.update(stats)
-        else:
-            properties["avg_price_per_m2"] = None
-            properties["listing_count"] = 0
-            properties["fill_color"] = [220, 220, 220, 70]
-        features.append(
-            {
-                "type": feature.get("type", "Feature"),
-                "geometry": feature.get("geometry"),
-                "properties": properties,
-            }
-        )
-    return {"type": "FeatureCollection", "features": features}
 
 
 if __name__ == "__main__":

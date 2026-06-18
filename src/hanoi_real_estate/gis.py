@@ -14,8 +14,10 @@ from .analytics import THAP_RUA_LAT, THAP_RUA_LON, ensure_dashboard_dataframe, l
 from .config import GIS_DATA_DIR
 from .db import ensure_postgres_gis_cache_tables, fetch_all_rows, is_postgres_backend
 from .repository import (
+    fetch_cached_gis_district_choropleth,
     fetch_cached_gis_district_price,
     fetch_cached_gis_price_surface,
+    replace_gis_district_choropleth,
     replace_gis_district_price,
     replace_gis_price_surface,
 )
@@ -439,9 +441,14 @@ def refresh_cached_gis_layers(active_only: bool = True) -> dict[str, int]:
     base_df = load_dashboard_dataframe(active_only=active_only)
     district_df = build_district_price_dataframe(base_df, active_only=active_only)
     surface_df = build_interpolated_price_surface_dataframe(base_df, active_only=active_only)
+    district_geojson = build_district_price_geojson(
+        load_hanoi_districts_geojson(),
+        district_df,
+    )
 
     district_rows = replace_gis_district_price(district_df.to_dict(orient="records"))
     surface_rows = replace_gis_price_surface(surface_df.to_dict(orient="records"))
+    replace_gis_district_choropleth(district_geojson)
     return {
         "district_rows": district_rows,
         "surface_rows": surface_rows,
@@ -500,6 +507,15 @@ def load_cached_gis_district_price_dataframe() -> pd.DataFrame:
             "listing_count",
         ]
     ].reset_index(drop=True)
+
+
+def load_cached_gis_district_choropleth() -> dict[str, Any]:
+    if is_postgres_backend():
+        ensure_postgres_gis_cache_tables()
+    payload = fetch_cached_gis_district_choropleth()
+    if isinstance(payload, dict) and payload.get("type") == "FeatureCollection":
+        return payload
+    return {"type": "FeatureCollection", "features": []}
 
 
 def get_hanoi_center_view_state() -> dict[str, float]:
@@ -671,6 +687,58 @@ def _deserialize_cell_polygon(value: Any) -> list[list[float]]:
     if isinstance(value, list):
         return value
     return []
+
+
+def build_district_price_geojson(district_geojson: dict, district_price_df: pd.DataFrame) -> dict:
+    if not district_geojson.get("features"):
+        return {"type": "FeatureCollection", "features": []}
+
+    lookup = {}
+    if not district_price_df.empty:
+        for _, row in district_price_df.iterrows():
+            lookup[str(row["district_osm"])] = {
+                "avg_price_per_m2": float(row["avg_price_per_m2"]),
+                "listing_count": int(row["listing_count"]),
+                "fill_color": _price_to_color(row["avg_price_per_m2"]),
+            }
+
+    features = []
+    for feature in district_geojson.get("features", []):
+        properties = dict(feature.get("properties", {}))
+        district_name = str(properties.get("district_name") or properties.get("name") or "")
+        stats = lookup.get(district_name)
+        if stats:
+            properties.update(stats)
+        else:
+            properties["avg_price_per_m2"] = None
+            properties["listing_count"] = 0
+            properties["fill_color"] = [220, 220, 220, 70]
+        features.append(
+            {
+                "type": feature.get("type", "Feature"),
+                "geometry": feature.get("geometry"),
+                "properties": properties,
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _price_to_color(value: float) -> list[int]:
+    if pd.isna(value):
+        return [220, 220, 220, 120]
+    thresholds = [
+        (25, [49, 54, 149, 185]),
+        (75, [69, 117, 180, 185]),
+        (150, [116, 173, 209, 185]),
+        (250, [171, 217, 233, 185]),
+        (350, [253, 174, 97, 195]),
+        (999999, [240, 59, 32, 200]),
+    ]
+    numeric = float(value)
+    for upper_bound, color in thresholds:
+        if numeric <= upper_bound:
+            return color
+    return [240, 59, 32, 200]
 
 
 def _import_osmnx():

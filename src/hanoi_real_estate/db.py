@@ -55,8 +55,10 @@ def get_dashboard_data_version() -> str:
                 (SELECT COUNT(*)::text FROM listing),
                 COALESCE((SELECT MAX(updated_at)::text FROM gis_price_surface), ''),
                 COALESCE((SELECT MAX(updated_at)::text FROM gis_district_price), ''),
+                COALESCE((SELECT MAX(updated_at)::text FROM gis_district_choropleth), ''),
                 (SELECT COUNT(*)::text FROM gis_price_surface),
-                (SELECT COUNT(*)::text FROM gis_district_price)
+                (SELECT COUNT(*)::text FROM gis_district_price),
+                (SELECT COUNT(*)::text FROM gis_district_choropleth)
             )::text AS version
             """
         )
@@ -71,6 +73,8 @@ def get_dashboard_data_version() -> str:
             (SELECT COUNT(*) FROM listing),
             '',
             '',
+            '',
+            0,
             0,
             0
         ) AS version
@@ -127,8 +131,16 @@ def ensure_postgres_gis_cache_tables() -> None:
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS gis_district_choropleth (
+            id BIGSERIAL PRIMARY KEY,
+            geojson TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
         "CREATE INDEX IF NOT EXISTS idx_gis_price_surface_updated_at ON gis_price_surface (updated_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_gis_district_price_updated_at ON gis_district_price (updated_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_gis_district_choropleth_updated_at ON gis_district_choropleth (updated_at DESC)",
     ]
     with get_engine().begin() as conn:
         for statement in statements:

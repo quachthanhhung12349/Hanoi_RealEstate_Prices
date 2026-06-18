@@ -108,6 +108,12 @@ CREATE TABLE IF NOT EXISTS gis_district_price (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS gis_district_choropleth (
+    id BIGSERIAL PRIMARY KEY,
+    geojson TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_listing_status ON listing (status);
 CREATE INDEX IF NOT EXISTS idx_listing_active_status ON listing (is_active, status);
 CREATE INDEX IF NOT EXISTS idx_listing_last_seen ON listing (last_seen_at);
@@ -121,6 +127,7 @@ CREATE INDEX IF NOT EXISTS idx_history_listing_scraped ON listing_history (listi
 CREATE INDEX IF NOT EXISTS idx_errors_stage_time ON scrape_errors (stage, happened_at DESC);
 CREATE INDEX IF NOT EXISTS idx_gis_price_surface_updated_at ON gis_price_surface (updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_gis_district_price_updated_at ON gis_district_price (updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gis_district_choropleth_updated_at ON gis_district_choropleth (updated_at DESC);
 
 CREATE OR REPLACE VIEW listing_dashboard_view AS
 SELECT

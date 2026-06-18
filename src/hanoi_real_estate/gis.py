@@ -221,10 +221,62 @@ def build_pydeck_point_dataframe(active_only: bool = True) -> pd.DataFrame:
 def build_price_hexbin_dataframe(active_only: bool = True) -> pd.DataFrame:
     frame = build_pydeck_point_dataframe(active_only=active_only)
     if frame.empty:
+        frame = frame.copy()
+        frame["Giá/m² clipped"] = pd.Series(dtype="float64")
         return frame
     frame = frame.dropna(subset=["Latitude", "Longitude", "Giá/m² trị"]).copy()
     frame = frame[frame["Giá/m² trị"] > 0].copy()
+    if frame.empty:
+        frame["Giá/m² clipped"] = pd.Series(dtype="float64")
+        return frame.reset_index(drop=True)
+
+    lower_bound = frame["Giá/m² trị"].quantile(0.01)
+    upper_bound = frame["Giá/m² trị"].quantile(0.99)
+    frame["Giá/m² clipped"] = frame["Giá/m² trị"].clip(lower=lower_bound, upper=upper_bound)
     return frame.reset_index(drop=True)
+
+
+def build_district_price_dataframe(active_only: bool = True) -> pd.DataFrame:
+    columns = [
+        "district_osm",
+        "district_name_normalized",
+        "avg_price_per_m2",
+        "listing_count",
+    ]
+    listings_gdf = build_listing_geodataframe(active_only=active_only)
+    if listings_gdf.empty:
+        return pd.DataFrame(columns=columns)
+
+    price_points = listings_gdf.copy()
+    price_points["Giá/m² trị"] = pd.to_numeric(price_points["Giá/m² trị"], errors="coerce")
+    price_points = price_points.dropna(subset=["Giá/m² trị"]).copy()
+    price_points = price_points[price_points["Giá/m² trị"] > 0].copy()
+    if price_points.empty:
+        return pd.DataFrame(columns=columns)
+
+    districts = load_hanoi_districts()[["district_name", "district_name_normalized", "geometry"]].copy()
+    if districts.empty:
+        return pd.DataFrame(columns=columns)
+
+    joined = gpd.sjoin(price_points, districts, how="inner", predicate="within")
+    if joined.empty:
+        return pd.DataFrame(columns=columns)
+
+    grouped = (
+        joined.groupby(["district_name", "district_name_normalized"], dropna=False)
+        .agg(
+            avg_price_per_m2=("Giá/m² trị", "mean"),
+            listing_count=("Mã tin", "count"),
+        )
+        .reset_index()
+        .rename(columns={"district_name": "district_osm"})
+        .sort_values(
+            by=["avg_price_per_m2", "listing_count"],
+            ascending=[False, False],
+        )
+        .reset_index(drop=True)
+    )
+    return grouped[columns]
 
 
 def build_interpolated_price_surface_dataframe(
@@ -419,7 +471,15 @@ def normalize_district_name(value: Any) -> str | None:
 
 def _prepare_districts_dataframe(districts: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     working = districts.copy()
-    for column in ["name:vi", "name", "alt_name", "official_name", "district_name"]:
+    for column in [
+        "name:vi",
+        "name",
+        "alt_name",
+        "official_name",
+        "district_name",
+        "NAME_2",
+        "VARNAME_2",
+    ]:
         if column not in working.columns:
             working[column] = None
 
@@ -429,6 +489,8 @@ def _prepare_districts_dataframe(districts: gpd.GeoDataFrame) -> gpd.GeoDataFram
         .fillna(working["name"])
         .fillna(working["alt_name"])
         .fillna(working["official_name"])
+        .fillna(working["NAME_2"])
+        .fillna(working["VARNAME_2"])
     )
     working["district_name_normalized"] = working["district_name"].apply(normalize_district_name)
     working = working[working.geometry.notna()].copy()

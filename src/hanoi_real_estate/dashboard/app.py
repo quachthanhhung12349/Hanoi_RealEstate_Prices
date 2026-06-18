@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import sqlite3
 
 import pandas as pd
 import plotly.express as px
@@ -18,12 +19,15 @@ from hanoi_real_estate.gis import (
     build_district_validation_dataframe,
     build_district_price_dataframe,
     build_interpolated_price_surface_dataframe,
-    build_price_hexbin_dataframe,
     build_pydeck_point_dataframe,
     get_hanoi_center_view_state,
     load_hanoi_boundary_geojson,
     load_hanoi_districts_geojson,
 )
+
+
+class DashboardDataError(RuntimeError):
+    pass
 
 
 st.set_page_config(
@@ -46,29 +50,29 @@ def load_data(
     pd.DataFrame,
     pd.DataFrame,
     pd.DataFrame,
-    pd.DataFrame,
     dict,
     dict,
 ]:
-    base_df = load_dashboard_dataframe(active_only=active_only)
-    table_df = build_table_dataframe(active_only=active_only)
-    correlation_df = build_correlation_dataframe(active_only=active_only)
-    region_stats_df = build_region_stats_dataframe(active_only=active_only)
-    gis_points_df = build_pydeck_point_dataframe(active_only=active_only)
-    gis_hexbin_df = build_price_hexbin_dataframe(active_only=active_only)
-    gis_surface_df = build_interpolated_price_surface_dataframe(active_only=active_only)
-    gis_district_price_df = build_district_price_dataframe(active_only=active_only)
-    gis_validation_df = build_boundary_validation_dataframe(active_only=active_only)
-    gis_district_validation_df = build_district_validation_dataframe(active_only=active_only)
-    hanoi_boundary_geojson = load_hanoi_boundary_geojson()
-    hanoi_districts_geojson = load_hanoi_districts_geojson()
+    try:
+        base_df = load_dashboard_dataframe(active_only=active_only)
+        table_df = build_table_dataframe(active_only=active_only)
+        correlation_df = build_correlation_dataframe(active_only=active_only)
+        region_stats_df = build_region_stats_dataframe(active_only=active_only)
+        gis_points_df = build_pydeck_point_dataframe(active_only=active_only)
+        gis_surface_df = build_interpolated_price_surface_dataframe(active_only=active_only)
+        gis_district_price_df = build_district_price_dataframe(active_only=active_only)
+        gis_validation_df = build_boundary_validation_dataframe(active_only=active_only)
+        gis_district_validation_df = build_district_validation_dataframe(active_only=active_only)
+        hanoi_boundary_geojson = load_hanoi_boundary_geojson()
+        hanoi_districts_geojson = load_hanoi_districts_geojson()
+    except (sqlite3.Error, OSError, ValueError, KeyError) as exc:
+        raise DashboardDataError(_friendly_data_error(exc)) from exc
     return (
         base_df,
         table_df,
         correlation_df,
         region_stats_df,
         gis_points_df,
-        gis_hexbin_df,
         gis_surface_df,
         gis_district_price_df,
         gis_validation_df,
@@ -238,7 +242,6 @@ def render_region_stats_tab(region_stats_df: pd.DataFrame) -> None:
 
 def render_gis_tab(
     gis_points_df: pd.DataFrame,
-    gis_hexbin_df: pd.DataFrame,
     gis_surface_df: pd.DataFrame,
     gis_district_price_df: pd.DataFrame,
     gis_validation_df: pd.DataFrame,
@@ -262,7 +265,7 @@ def render_gis_tab(
 
     layer_mode = st.radio(
         "Price layer",
-        options=["Interpolated price surface", "Average price hex bins", "District average", "Points only"],
+        options=["Interpolated price surface", "District average", "Points only"],
         horizontal=True,
     )
 
@@ -318,25 +321,6 @@ def render_gis_tab(
                 pickable=True,
             )
         )
-    elif layer_mode == "Average price hex bins":
-        layers.append(
-            pdk.Layer(
-                "HexagonLayer",
-                gis_hexbin_df,
-                get_position="[Longitude, Latitude]",
-                get_color_weight="Giá/m² clipped",
-                color_aggregation="MEAN",
-                get_elevation_weight="Giá/m² clipped",
-                elevation_aggregation="MEAN",
-                elevation_scale=8,
-                elevation_range=[0, 800],
-                extruded=True,
-                radius=700,
-                coverage=0.85,
-                opacity=0.5,
-                pickable=True,
-            )
-        )
     elif layer_mode == "District average" and district_geojson_data["features"]:
         layers.append(
             pdk.Layer(
@@ -353,7 +337,7 @@ def render_gis_tab(
     layers.append(point_layer)
 
     deck = pdk.Deck(
-        map_style="mapbox://styles/mapbox/light-v9",
+        map_style=pdk.map_styles.CARTO_LIGHT,
         initial_view_state=pdk.ViewState(**get_hanoi_center_view_state()),
         layers=layers,
         tooltip={
@@ -392,13 +376,10 @@ def render_gis_tab(
         "Red points are outside Hanoi, amber points are district mismatches, and green points passed both checks."
     )
     st.caption(
-        "Prices are clipped at the 1st and 99th percentiles for visualization, so extreme outliers do not dominate the color scale. "
         "Use district average mode for a cleaner administrative-region summary."
     )
     if layer_mode == "Interpolated price surface":
         render_price_legend(surface_df, "predicted_price_per_m2", layer_mode)
-    elif layer_mode == "Average price hex bins":
-        render_price_legend(gis_hexbin_df, "Giá/m² clipped", layer_mode)
     elif layer_mode == "District average":
         render_price_legend(gis_district_price_df, "avg_price_per_m2", layer_mode)
 
@@ -423,23 +404,29 @@ def main() -> None:
     st.title("Hanoi Real Estate Dashboard")
 
     active_only = st.sidebar.checkbox("Only active listings", value=True)
-    (
-        base_df,
-        table_df,
-        correlation_df,
-        region_stats_df,
-        gis_points_df,
-        gis_hexbin_df,
-        gis_surface_df,
-        gis_district_price_df,
-        gis_validation_df,
-        gis_district_validation_df,
-        hanoi_boundary_geojson,
-        hanoi_districts_geojson,
-    ) = load_data(active_only=active_only)
+    try:
+        (
+            base_df,
+            table_df,
+            correlation_df,
+            region_stats_df,
+            gis_points_df,
+            gis_surface_df,
+            gis_district_price_df,
+            gis_validation_df,
+            gis_district_validation_df,
+            hanoi_boundary_geojson,
+            hanoi_districts_geojson,
+        ) = load_data(active_only=active_only)
+    except DashboardDataError as exc:
+        st.error("The dashboard could not load the database.")
+        st.caption(str(exc))
+        st.info("Initialize the database with `PYTHONPATH=src python3 scripts/init_db.py`, or provide `data/demo.sqlite3` for demo data.")
+        return
 
     if base_df.empty:
-        st.warning("No dashboard data found in the SQLite database yet.")
+        st.info("No dashboard data found yet.")
+        st.caption("Run the scraper/import scripts to populate the local SQLite database, or add a demo database at `data/demo.sqlite3`.")
         return
 
     filtered_base, filtered_table, filtered_correlation, filtered_region_stats = apply_filters(
@@ -463,7 +450,6 @@ def main() -> None:
     with tab_gis:
         filtered_ids = set(filtered_base["Mã tin"].astype(str))
         filtered_gis_points = gis_points_df[gis_points_df["Mã tin"].astype(str).isin(filtered_ids)].copy()
-        filtered_gis_hexbin = gis_hexbin_df[gis_hexbin_df["Mã tin"].astype(str).isin(filtered_ids)].copy()
         filtered_gis_surface = gis_surface_df
         filtered_gis_district_price = gis_district_price_df
         filtered_gis_validation = gis_validation_df[
@@ -474,7 +460,6 @@ def main() -> None:
         ].copy()
         render_gis_tab(
             filtered_gis_points,
-            filtered_gis_hexbin,
             filtered_gis_surface,
             filtered_gis_district_price,
             filtered_gis_validation,
@@ -493,6 +478,15 @@ def _range_from_series(series: pd.Series) -> tuple[float, float]:
     if minimum == maximum:
         maximum = minimum + 1.0
     return minimum, maximum
+
+
+def _friendly_data_error(exc: Exception) -> str:
+    message = str(exc)
+    if "no such table" in message:
+        return "The SQLite database exists, but the expected tables are missing. Run `PYTHONPATH=src python3 scripts/init_db.py` or use the bundled demo database."
+    if "unable to open database file" in message:
+        return "The SQLite database file could not be opened. Check the configured database path and file permissions."
+    return message.splitlines()[0] if message else type(exc).__name__
 
 
 def _rebuild_region_stats_from_filtered_base(

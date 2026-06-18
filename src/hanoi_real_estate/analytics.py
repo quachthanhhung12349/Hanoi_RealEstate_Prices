@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from .db import get_connection
+from .db import read_sql_dataframe
 
 
 THAP_RUA_LAT = 21.0255923
@@ -55,10 +55,9 @@ def load_dashboard_dataframe(active_only: bool = True) -> pd.DataFrame:
         LEFT JOIN listing_current lc ON lc.listing_id = l.listing_id
         LEFT JOIN address a ON a.listing_id = l.listing_id
         {where_clause}
-        ORDER BY COALESCE(lc.published_at, l.last_seen_at) DESC, l.listing_id DESC
+        ORDER BY COALESCE(lc.published_at, CAST(l.last_seen_at AS TEXT)) DESC, l.listing_id DESC
     """
-    with get_connection() as conn:
-        df = pd.read_sql_query(query, conn)
+    df = read_sql_dataframe(query)
 
     if df.empty:
         return pd.DataFrame(columns=_dashboard_columns())

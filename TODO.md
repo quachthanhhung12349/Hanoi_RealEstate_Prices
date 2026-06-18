@@ -1,156 +1,58 @@
-# Phase 1b Plan: Deploy + Background Scraping
+Phase 3 Operating Plan: Local Selenium + Daily Firecrawl
 
-## Context
+Architecture
 
-Phase 1 (scraping, SQLite storage, Streamlit dashboard) is mostly done. Phase 1b means two things:
-1. **Automated background scraping** — scrapers run on a schedule without manual intervention
-2. **Deployed dashboard** — the Streamlit app is accessible outside localhost
+    Storage Layer (Source of Truth): Supabase/PostgreSQL
 
-The constraint is minimum financial cost. The key technical challenges are:
-- Selenium + Chrome is heavy (~1GB RAM), which rules out most free serverless platforms
-- SQLite is file-based, so the dashboard and scraper must share the same disk
-- The scraper already handles resumability — scheduling is a thin wrapper, not a rewrite
+    Local Backfill Path: Selenium-based local scraping on the developer machine for large historical imports, repair runs, and manual refreshes.
 
----
+    Cloud Incremental Path: Firecrawl-based daily incremental sync for newest listings only.
 
-## Two Tiers (Cost vs. Reliability)
+    Dashboard Path: Streamlit reads from PostgreSQL/Supabase and does not perform scraping.
 
-### Tier 0 — $0/month: Local machine + Cloudflare Tunnel
+Execution Strategy
 
-Keep everything on the current machine. Add automation and expose the dashboard publicly.
+    Local Machine:
+        Use `discover_listings.py` and `scrape_listing_details.py` for deep backfill and repair work.
+        Migrate local SQLite data into PostgreSQL when needed.
 
-**Pros:** Literally free. No migration. SQLite stays where it is.  
-**Cons:** Dashboard goes down when your PC is off. Less reliable for long scraping runs.
+    GitHub Actions:
+        Use Actions only as a scheduler/orchestrator.
+        Do not run Selenium or Chrome in Actions.
+        Run `scripts/daily_firecrawl_sync.py` once a day with `DATABASE_URL` and `FIRECRAWL_API_KEY`.
 
-### Tier 1 — ~$4–6/month: Cheap VPS (Hetzner CX22)
+Daily Firecrawl Sync Policy
 
-Move project to a Hetzner CX22 (2 vCPU x86, 4GB RAM, 40GB SSD — €4.51/mo). Always on.
+    Canonical category URL: `https://batdongsan.com.vn/ban-dat-ha-noi?cIds=41`
 
-**Pros:** Reliable, always-on, ARM-free (avoids undetected_chromedriver ARM issues), SSH access.  
-**Cons:** Small monthly cost, requires initial setup.
+    Daily flow:
+        Scrape page 1 through Firecrawl.
+        Extract listing URLs.
+        Skip listing IDs already known in PostgreSQL.
+        If fewer than 30 new URLs are found, scrape page 2.
+        Stop after collecting at most 30 new URLs.
+        Scrape detail pages through Firecrawl.
+        Normalize through the existing payload path and save into PostgreSQL.
 
-**Recommendation: Start with Tier 0 (local + Cloudflare Tunnel) unless you need it always-on. If yes → Hetzner CX22 is the cheapest reliable VPS.**
+    Guardrails:
+        Do not mark unseen listings inactive from the daily 1-2 page scan.
+        Keep retries conservative for Firecrawl failures and rate limits.
 
----
+Deployment Notes
 
-## Implementation Plan (applies to both tiers, paths differ slightly)
+    Required secrets:
+        `DATABASE_URL`
+        `FIRECRAWL_API_KEY`
 
-### 1. Scheduled Scraping via Cron
+    Optional settings:
+        `FIRECRAWL_DAILY_MAX_NEW`
+        `FIRECRAWL_DAILY_MAX_PAGES`
+        `DAILY_DISCOVER_URL`
 
-Add two cron jobs (no new code needed — just wraps existing scripts):
+Cost/Operational Intent
 
-```
-# Run discovery daily at 2am, up to 50 pages
-0 2 * * * cd /path/to/project && PYTHONPATH=src python3 -m hanoi_real_estate.scrapers.discover_listings --max-pages 50 >> logs/discover.log 2>&1
+    Selenium stays local to reduce ban/block risk in hosted CI.
 
-# Run detail scraping daily at 3am (after discovery), process all queued
-0 3 * * * cd /path/to/project && PYTHONPATH=src python3 -m hanoi_real_estate.scrapers.scrape_listing_details --limit 0 --max-workers 1 --batch-limit 10 >> logs/scrape_details.log 2>&1
-```
+    Firecrawl handles only the newest small daily increment so the free tier remains viable.
 
-- Uses `--limit 0` (process all queued), single worker to avoid detection
-- Sequential (discover first, then details) using separate cron times
-- Logs go to `logs/` (directory already exists in repo)
-- No new Python code — pure cron scheduling
-
-### 2. Dashboard as a Persistent Service (systemd)
-
-Create a systemd user service to keep Streamlit running:
-
-**File:** `~/.config/systemd/user/bds-dashboard.service`
-
-```ini
-[Unit]
-Description=BDS Streamlit Dashboard
-After=network.target
-
-[Service]
-WorkingDirectory=/path/to/project
-Environment=PYTHONPATH=src
-ExecStart=/usr/bin/streamlit run src/hanoi_real_estate/dashboard/app.py --server.port 8501 --server.headless true
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-```
-
-Enable with: `systemctl --user enable --now bds-dashboard`
-
-### 3. Dashboard Exposure
-
-**Tier 0 (local):** Use Cloudflare Tunnel (free, no credit card needed):
-```bash
-# Install cloudflared, then:
-cloudflared tunnel --url http://localhost:8501
-# Gives a free *.trycloudflare.com URL (ephemeral, no account needed)
-# For a stable URL: create a free Cloudflare account + tunnel
-```
-
-**Tier 1 (VPS):** Open port 8501 in firewall, or add Caddy as reverse proxy (free Let's Encrypt HTTPS):
-```
-# /etc/caddy/Caddyfile
-bds.yourdomain.com {
-    reverse_proxy localhost:8501
-}
-```
-Caddy auto-manages HTTPS certs. Free domain via Cloudflare (free DNS) or `.duckdns.org` (free subdomain).
-
-### 4. SQLite Backup (Optional but Recommended)
-
-Add a weekly backup cron — one liner, no new code:
-
-```
-0 4 * * 0 cp /path/to/data/bds_live.sqlite3 /path/to/data/bds_live.bak.$(date +%Y%m%d).sqlite3
-```
-
-Or use `litestream` (free, open-source) to stream SQLite WAL to local/S3 — but S3 has cost. Local backup is free.
-
-### 5. Log Rotation (Optional)
-
-Add `logrotate` config to prevent logs growing unbounded:
-
-```
-/path/to/logs/*.log {
-    weekly
-    rotate 4
-    compress
-    missingok
-    notifempty
-}
-```
-
----
-
-## Files to Create/Modify
-
-| File | Action | Purpose |
-|------|---------|---------|
-| `logs/.gitkeep` | Create | Ensure logs dir exists in repo |
-| `scripts/cron_setup.sh` | Create | Installs cron jobs (documents the schedule) |
-| `~/.config/systemd/user/bds-dashboard.service` | Create | Systemd service for dashboard |
-| `README.md` | Update | Add Phase 1b deployment instructions |
-
-No changes to scraper logic, database schema, or dashboard code — Phase 1b is purely operational.
-
----
-
-## Cost Summary
-
-| Component | Tier 0 | Tier 1 |
-|-----------|--------|--------|
-| Server | $0 (local PC) | ~$4.51/mo (Hetzner CX22) |
-| Dashboard URL | Free (trycloudflare.com ephemeral) or free Cloudflare account | Free (Caddy + DuckDNS) |
-| Database | $0 (local SQLite) | $0 (SQLite on VPS disk) |
-| Scheduling | $0 (cron) | $0 (cron) |
-| Backups | $0 (local copy) | $0 (local copy) |
-| **Total** | **$0** | **~$4.51/mo** |
-
----
-
-## Verification
-
-1. Trigger cron job manually: run the discover + scrape commands and confirm new rows appear in SQLite
-2. Check systemd service status: `systemctl --user status bds-dashboard`
-3. Access dashboard via tunnel/VPS URL in a browser
-4. Wait 24h and verify logs show automated runs completed
-5. Check `listing` table for new `done` rows from the overnight scrape
+    The daily sync is intentionally incomplete if listing churn is higher than the daily cap; local Selenium remains the recovery path.

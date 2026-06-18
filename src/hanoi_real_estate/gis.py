@@ -13,7 +13,7 @@ from shapely.geometry import Point
 
 from .analytics import THAP_RUA_LAT, THAP_RUA_LON, load_dashboard_dataframe
 from .config import GIS_DATA_DIR
-from .db import get_connection
+from .db import fetch_all_rows
 
 
 HANOI_BOUNDARY_PATH = GIS_DATA_DIR / "hanoi_boundary.geojson"
@@ -552,6 +552,5 @@ def _fetch_known_hanoi_district_names() -> list[str]:
           AND TRIM(district) != ''
         ORDER BY district
     """
-    with get_connection() as conn:
-        rows = conn.execute(query).fetchall()
+    rows = fetch_all_rows(query)
     return [str(row["district"]).strip() for row in rows if row["district"]]

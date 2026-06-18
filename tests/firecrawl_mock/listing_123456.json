@@ -1,0 +1,7 @@
+{
+  "url": "https://batdongsan.com.vn/ban-dat-ha-noi/example-a-pr123456",
+  "links": [],
+  "markdown": "Ngày đăng: 18/06/2026\nNgày hết hạn: 18/07/2026\nLoại tin: Tin thường\nMã tin: 123456",
+  "rawHtml": "<html><body><div class='re__pr-title'>Dat nen mock A</div><span class='re__address'><span class='re__address-line-1'>Phuong Mock, Quan Mock</span><span class='re__address-line-2'>Ha Noi</span></span><div class='re__pr-short-info-item'><span class='value'>3,5 ty</span><span class='ext'>35 trieu/m2</span></div><div class='re__pr-short-info-item js__pr-config-item'><span class='title'>Ngày đăng</span><span class='value'>18/06/2026</span></div><div class='re__pr-short-info-item js__pr-config-item'><span class='title'>Ngày hết hạn</span><span class='value'>18/07/2026</span></div><div class='re__pr-short-info-item js__pr-config-item'><span class='title'>Loại tin</span><span class='value'>Tin thuong</span></div><div class='re__pr-short-info-item js__pr-config-item'><span class='title'>Mã tin</span><span class='value'>123456</span></div><iframe class='lazyload' data-src='https://maps.google.com/?q=21.03,105.85'></iframe><div class='re__breadcrumb'><a class='re__link-se' level='3'>Quan Mock</a></div><div class='re__pr-specs-content-item'><div class='re__pr-specs-content-item-title'>Diện tích</div><div class='re__pr-specs-content-item-value'>100 m2</div></div><div class='re__pr-specs-content-item'><div class='re__pr-specs-content-item-title'>Pháp lý</div><div class='re__pr-specs-content-item-value'>So do</div></div></body></html>",
+  "metadata": {}
+}

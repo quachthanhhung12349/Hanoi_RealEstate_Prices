@@ -15,10 +15,11 @@ At a high level, it aims to:
 
 The current system combines:
 
-- resumable web scraping from `batdongsan.com.vn`
-- SQLite-based data storage
+- resumable Selenium-based local scraping from `batdongsan.com.vn`
+- PostgreSQL/Supabase support for hosted storage
 - exploratory analytics and notebook workflows
 - a Streamlit dashboard for both tabular analysis and GIS-based map views
+- a Firecrawl-based daily incremental sync path for cloud automation
 
 ## Phase 2
 
@@ -30,6 +31,7 @@ At this stage, the system supports:
 
 - `discover_listings.py` to discover listing URLs
 - `scrape_listing_details.py` to scrape listing details with resume behavior through database state
+- `daily_firecrawl_sync.py` to fetch a small daily increment of new listings without running Selenium in GitHub Actions
 - import scripts for:
   - `hrefs.txt` / `hrefs_old.txt`
   - `data_bds.csv`
@@ -88,6 +90,17 @@ Detail scraping is resumable by design:
 - failed listings move to `failed`
 - stopping the process does not lose progress
 - restarting the scraper continues from the remaining pending queue
+
+### Daily cloud sync
+
+The cloud-safe incremental path uses Firecrawl instead of Selenium:
+
+- GitHub Actions is used only as a scheduler/orchestrator
+- the daily job scrapes the `cIds=41` category page
+- it checks PostgreSQL for already-known listing IDs
+- it fetches up to 30 new listing detail pages per run
+- it writes normalized listing data directly to PostgreSQL
+- it does not attempt full backfill or broad inactive-listing reconciliation
 
 ### GIS dashboard behavior
 
@@ -164,19 +177,49 @@ The current code looks for Chrome in these default locations:
 
 If Chrome is installed somewhere else, update `CHROME_BINARY` in `src/hanoi_real_estate/config.py`.
 
+The Firecrawl-based daily sync does not require Chrome or Selenium in GitHub Actions.
+
 ## Local and Demo Databases
 
-The project currently uses SQLite locally while Phase 3 PostgreSQL/Supabase support is being prepared.
+The project currently supports both local SQLite and hosted PostgreSQL/Supabase.
 
 Database path behavior:
 
 - `data/bds_live.sqlite3`: local runtime database used by scraping/import workflows
 - `data/demo.sqlite3`: temporary bundled demo database for public/demo dashboard use
 - `HANOI_RE_DB_PATH`: optional environment variable to force a specific SQLite database path
+- `DATABASE_URL`: optional PostgreSQL/Supabase connection string; when set, the app uses PostgreSQL instead of SQLite
 
 By default, the app uses `data/bds_live.sqlite3` if it exists. If it does not exist, it falls back to `data/demo.sqlite3`.
 
-The live runtime database is ignored by git so scraper runs do not constantly dirty the working tree. The demo database is intentionally kept as a temporary public sample until the project fully transitions to hosted PostgreSQL.
+The live runtime database is ignored by git so scraper runs do not constantly dirty the working tree. The demo database is intentionally kept as a temporary public sample while hosted PostgreSQL/Supabase support is being rolled out.
+
+## Firecrawl Daily Sync
+
+The production-friendly incremental sync path is designed around Firecrawl so the project does not run Selenium in GitHub Actions.
+
+Required environment variables:
+
+- `DATABASE_URL`
+- `FIRECRAWL_API_KEY`
+
+Optional environment variables:
+
+- `DAILY_DISCOVER_URL` default: `https://batdongsan.com.vn/ban-dat-ha-noi?cIds=41`
+- `FIRECRAWL_DAILY_MAX_NEW` default: `30`
+- `FIRECRAWL_DAILY_MAX_PAGES` default: `2`
+
+Run the daily sync locally:
+
+```bash
+PYTHONPATH=src python3 scripts/daily_firecrawl_sync.py
+```
+
+Run a dry test with local mocked Firecrawl responses:
+
+```bash
+PYTHONPATH=src python3 scripts/daily_firecrawl_sync.py --dry-run --mock-dir path/to/mock_firecrawl
+```
 
 ## Useful Commands
 
@@ -196,6 +239,12 @@ Scrape listing details in resumable batches:
 
 ```bash
 PYTHONPATH=src python3 -m hanoi_real_estate.scrapers.scrape_listing_details --limit 0 --max-workers 1 --batch-limit 5
+```
+
+Run the Firecrawl daily incremental sync:
+
+```bash
+PYTHONPATH=src python3 scripts/daily_firecrawl_sync.py
 ```
 
 Import legacy href data:
@@ -232,7 +281,11 @@ jupyter notebook notebooks/gis_geojson_quickstart.ipynb
 
 ### Phase 3
 
-Deploy the project and implement background scraping for constantly up-to-date data.
+Deploy the project and operate with:
+
+- local Selenium backfill/repair scraping
+- PostgreSQL/Supabase as hosted storage
+- Firecrawl daily incremental cloud sync
 
 ### Phase 4
 

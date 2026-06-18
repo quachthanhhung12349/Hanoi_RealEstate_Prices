@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.express as px
 import pydeck as pdk
 import streamlit as st
+from sqlalchemy.exc import SQLAlchemyError
 
 from hanoi_real_estate.analytics import (
     build_correlation_dataframe,
@@ -65,7 +66,7 @@ def load_data(
         gis_district_validation_df = build_district_validation_dataframe(active_only=active_only)
         hanoi_boundary_geojson = load_hanoi_boundary_geojson()
         hanoi_districts_geojson = load_hanoi_districts_geojson()
-    except (sqlite3.Error, OSError, ValueError, KeyError) as exc:
+    except (sqlite3.Error, SQLAlchemyError, OSError, ValueError, KeyError) as exc:
         raise DashboardDataError(_friendly_data_error(exc)) from exc
     return (
         base_df,
@@ -421,12 +422,18 @@ def main() -> None:
     except DashboardDataError as exc:
         st.error("The dashboard could not load the database.")
         st.caption(str(exc))
-        st.info("Initialize the database with `PYTHONPATH=src python3 scripts/init_db.py`, or provide `data/demo.sqlite3` for demo data.")
+        st.info(
+            "Initialize the local database with `PYTHONPATH=src python3 scripts/init_db.py`, "
+            "provide `data/demo.sqlite3`, or configure `DATABASE_URL` for PostgreSQL."
+        )
         return
 
     if base_df.empty:
         st.info("No dashboard data found yet.")
-        st.caption("Run the scraper/import scripts to populate the local SQLite database, or add a demo database at `data/demo.sqlite3`.")
+        st.caption(
+            "Run the scraper/import scripts to populate the local SQLite database, "
+            "add a demo database at `data/demo.sqlite3`, or point the app at PostgreSQL with `DATABASE_URL`."
+        )
         return
 
     filtered_base, filtered_table, filtered_correlation, filtered_region_stats = apply_filters(
@@ -483,9 +490,15 @@ def _range_from_series(series: pd.Series) -> tuple[float, float]:
 def _friendly_data_error(exc: Exception) -> str:
     message = str(exc)
     if "no such table" in message:
-        return "The SQLite database exists, but the expected tables are missing. Run `PYTHONPATH=src python3 scripts/init_db.py` or use the bundled demo database."
+        return (
+            "The database exists, but the expected tables are missing. "
+            "Run `PYTHONPATH=src python3 scripts/init_db.py`, initialize PostgreSQL with "
+            "`sql/schema_postgres.sql`, or use the bundled demo database."
+        )
     if "unable to open database file" in message:
         return "The SQLite database file could not be opened. Check the configured database path and file permissions."
+    if "password authentication failed" in message or "connection refused" in message:
+        return "The PostgreSQL connection failed. Check `DATABASE_URL`, database availability, and credentials."
     return message.splitlines()[0] if message else type(exc).__name__
 
 

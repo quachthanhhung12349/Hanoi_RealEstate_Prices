@@ -1,48 +1,58 @@
 # Hanoi Real Estate Prices Analysis and Recommendation System
 
-This repository is currently **Phase 1** of the project.
+Live website: https://hanoirealestateprices-bnsxy55lsaau8jmmrzvay4.streamlit.app/
 
-## Phase 1
+This repository is currently **Phase 3** of the project.
 
-Phase 1 is focused on:
+## Phase 3
 
-- scraping Hanoi real estate listing URLs and listing details from `batdongsan.com.vn`
-- storing the scraped data in SQLite
-- importing existing CSV and href snapshots into the database
-- building the first dashboard for basic exploratory analysis
+Phase 3 is focused on:
+
+- deploying the dashboard as a read-only Streamlit app backed by Supabase/PostgreSQL
+- keeping scraping independent from the GUI so data collection can run on its own schedule
+- running a daily Firecrawl incremental sync into Supabase
+- supporting manual and large backfill scraping locally with Selenium-based scripts
+- precomputing and caching GIS layers in PostgreSQL so the hosted app does not rebuild heavy map layers on every page load
 
 At this stage, the system supports:
 
-- `discover_listings.py` to discover listing URLs
+- `discover_listings.py` to discover listing URLs for deeper local scraping and repair runs
 - `scrape_listing_details.py` to scrape listing details with resume behavior through database state
+- `daily_firecrawl_sync.py` to perform daily incremental Firecrawl ingestion into PostgreSQL/Supabase
+- GIS cache refresh inside the daily sync so hosted map layers stay up to date
 - import scripts for:
   - `hrefs.txt` / `hrefs_old.txt`
   - `data_bds.csv`
 - `analytics.py` for notebook-aligned cleaning and derived metrics
 - a Streamlit dashboard for:
   - table view
-  - distance to Hanoi center vs price per m²
+  - distance to Hanoi center vs price per m2
   - regional house price statistics
-  - GIS preview backed by precomputed PostgreSQL cache tables
+  - GIS views backed by precomputed PostgreSQL cache tables
 
-## What Phase 1 is about
+## What Phase 3 is about
 
-Phase 1 is the **data scraping and initial data analysis** stage.
+Phase 3 is the **deployment and production data pipeline** stage.
 
-The goal here is to create a working end-to-end MVP that can:
+The goal here is to create a working end-to-end system that can:
 
-1. collect listing data
-2. store it in a structured database
-3. support basic inspection and analysis through a dashboard
+1. collect listing data through both local scraping and daily cloud sync
+2. store the source-of-truth dataset in Supabase/PostgreSQL
+3. refresh cached GIS outputs outside the web app
+4. serve a fast, read-only dashboard through Streamlit Community Cloud
 
 ## Current Project Structure
 
-- `src/hanoi_real_estate/scrapers/`: live scraping code
-- `src/hanoi_real_estate/repository.py`: SQLite repository layer
+- `src/hanoi_real_estate/scrapers/`: live scraping code for URL discovery and detailed scraping
+- `src/hanoi_real_estate/firecrawl.py`: Firecrawl client and parsing helpers
+- `src/hanoi_real_estate/repository.py`: PostgreSQL/SQLite repository layer plus GIS cache persistence
 - `src/hanoi_real_estate/analytics.py`: analysis and feature engineering
+- `src/hanoi_real_estate/gis.py`: GIS builders and cached GIS refresh/load helpers
 - `src/hanoi_real_estate/dashboard/app.py`: Streamlit dashboard
-- `scripts/`: utility scripts for DB init and legacy data import
-- `data/`: SQLite database
+- `streamlit_app.py`: Streamlit Community Cloud entrypoint
+- `scripts/`: DB init, import utilities, and daily Firecrawl sync
+- `sql/`: PostgreSQL schema and GIS cache tables
+- `data/`: local SQLite database and local artifacts when working outside Supabase
 
 ## MVP Behavior
 
@@ -54,15 +64,48 @@ The discovery scraper can stop early when it reaches a page that contains only l
 
 Detail scraping is resumable by design:
 
-- pending work is stored in SQLite
+- pending work is stored in database state
 - successfully scraped listings move to `done`
 - failed listings move to `failed`
 - stopping the process does not lose progress
 - restarting the scraper continues from the remaining pending queue
 
+### Daily sync and hosted GIS behavior
+
+The hosted Streamlit app does not scrape data and does not recompute the heavy interpolation layer live.
+
+- Firecrawl handles the daily incremental sync into Supabase/PostgreSQL
+- manual scraping can still be run independently whenever needed
+- the daily sync refreshes cached GIS tables after ingestion
+- the Streamlit app reads listings and cached GIS layers from PostgreSQL/Supabase
+
+## Technologies Used
+
+- Scraping and parsing:
+  - Selenium
+  - undetected-chromedriver
+  - Firecrawl
+  - Requests
+  - BeautifulSoup
+- Data storage and access:
+  - Supabase
+  - PostgreSQL
+  - SQLite
+  - SQLAlchemy
+  - Psycopg
+- Dashboard and visualization:
+  - Streamlit
+  - Plotly
+  - Pydeck
+- GIS and geospatial processing:
+  - GeoPandas
+  - Shapely
+  - Pyogrio
+  - OSMnx
+
 ## Useful Commands
 
-Initialize the database:
+Initialize the local database:
 
 ```bash
 PYTHONPATH=src python3 scripts/init_db.py
@@ -92,10 +135,16 @@ Import legacy CSV data:
 PYTHONPATH=src python3 scripts/import_csv_to_db.py
 ```
 
-Run the dashboard:
+Run the dashboard locally:
 
 ```bash
 ./scripts/run_dashboard.sh
+```
+
+Run the Streamlit Community Cloud entrypoint locally:
+
+```bash
+PYTHONPATH=src streamlit run streamlit_app.py
 ```
 
 Run the daily Firecrawl sync plus GIS refresh:
@@ -108,27 +157,28 @@ PYTHONPATH=src python3 scripts/daily_firecrawl_sync.py
 
 For Streamlit Community Cloud:
 
+- main file: `streamlit_app.py`
+- Python version: `3.12`
 - use `requirements.txt` for the hosted dashboard dependency set
 - configure `DATABASE_URL` in Streamlit app secrets
-- keep scraping/manual sync outside Streamlit
-- run the daily Firecrawl sync in a worker environment that installs `requirements-worker.txt`
-- the daily sync refreshes cached GIS layers in PostgreSQL, and the hosted dashboard reads those cached layers instead of rebuilding the interpolated surface live
+- keep scraping and manual sync outside Streamlit
+
+For the worker or scheduled sync environment:
+
+- use `requirements-worker.txt`
+- configure:
+  - `DATABASE_URL`
+  - `FIRECRAWL_API_KEY`
+- run `scripts/daily_firecrawl_sync.py` once a day
+- the daily sync refreshes cached GIS layers in PostgreSQL after ingestion
 
 ## Planned Next Phases
 
-### Phase 1b
-
-Deploy the project and implement background scraping for constantly up-to-date data.
-
-### Phase 2
-
-GIS integration to provide better house price representation via an interactive heatmap.
-
-### Phase 3
+### Phase 4
 
 An ML model to help predict house prices in Hanoi.
 
-### Phase 4
+### Phase 5
 
 RAG/LLM integration with both the scraped data and ML model outputs to:
 

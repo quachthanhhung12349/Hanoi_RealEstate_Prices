@@ -148,7 +148,7 @@ def scrape_one(
     try:
         for attempt in range(1, max_retries + 1):
             try:
-                sleep_jitter(4.0, 8.0)
+                sleep_jitter(3.0, 6.0)
                 return extract_property_info(driver, url)
             except Exception as exc:
                 if attempt >= max_retries or not is_rate_limited_error(exc):

@@ -24,6 +24,8 @@ FIRECRAWL_DAILY_MAX_NEW = int(os.environ.get("FIRECRAWL_DAILY_MAX_NEW", "20"))
 FIRECRAWL_DAILY_MAX_PAGES = int(os.environ.get("FIRECRAWL_DAILY_MAX_PAGES", "2"))
 
 
+CHROME_VERSION = int(os.environ.get("CHROME_VERSION", "149"))
+
 # Define paths based on the operating system
 if sys.platform.startswith('win'):
     # Common Windows paths for Chrome

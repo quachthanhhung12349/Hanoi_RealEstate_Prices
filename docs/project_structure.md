@@ -1,4 +1,4 @@
-# Project Structure
+strea# Project Structure
 
 ## Directories
 

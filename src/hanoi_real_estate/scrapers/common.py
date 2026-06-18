@@ -10,7 +10,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
-from ..config import CHROME_BINARY
+from ..config import CHROME_BINARY, CHROME_VERSION
 
 # undetected_chromedriver copies a single chromedriver.exe to a fixed path on
 # Windows; concurrent calls race to rename that file and raise WinError 32/183.
@@ -33,7 +33,7 @@ def create_driver(headless: bool = False):
         options.add_argument("--headless=new")
     options.page_load_strategy = "normal"
     with _driver_creation_lock:
-        return uc.Chrome(options=options)
+        return uc.Chrome(options=options, version_main=CHROME_VERSION)
 
 
 def sleep_jitter(min_seconds: float = 2.0, max_seconds: float = 5.0) -> None:

@@ -15,13 +15,15 @@ from hanoi_real_estate.analytics import (
     build_table_dataframe,
     load_dashboard_dataframe,
 )
+from hanoi_real_estate.db import get_dashboard_data_version
 from hanoi_real_estate.gis import (
     build_boundary_validation_dataframe,
     build_district_validation_dataframe,
     build_district_price_dataframe,
-    build_interpolated_price_surface_dataframe,
     build_pydeck_point_dataframe,
     get_hanoi_center_view_state,
+    load_cached_gis_district_price_dataframe,
+    load_cached_gis_price_surface_dataframe,
     load_hanoi_boundary_geojson,
     load_hanoi_districts_geojson,
 )
@@ -38,9 +40,10 @@ st.set_page_config(
 )
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(show_spinner=False)
 def load_data(
     active_only: bool,
+    data_version: str,
 ) -> tuple[
     pd.DataFrame,
     pd.DataFrame,
@@ -56,14 +59,20 @@ def load_data(
 ]:
     try:
         base_df = load_dashboard_dataframe(active_only=active_only)
-        table_df = build_table_dataframe(active_only=active_only)
-        correlation_df = build_correlation_dataframe(active_only=active_only)
-        region_stats_df = build_region_stats_dataframe(active_only=active_only)
-        gis_points_df = build_pydeck_point_dataframe(active_only=active_only)
-        gis_surface_df = build_interpolated_price_surface_dataframe(active_only=active_only)
-        gis_district_price_df = build_district_price_dataframe(active_only=active_only)
-        gis_validation_df = build_boundary_validation_dataframe(active_only=active_only)
-        gis_district_validation_df = build_district_validation_dataframe(active_only=active_only)
+        table_df = build_table_dataframe(base_df)
+        correlation_df = build_correlation_dataframe(base_df)
+        region_stats_df = build_region_stats_dataframe(base_df)
+        gis_points_df = build_pydeck_point_dataframe(base_df)
+        gis_surface_df = load_cached_gis_price_surface_dataframe()
+        gis_district_price_df = load_cached_gis_district_price_dataframe()
+        if gis_surface_df.empty:
+            gis_surface_df = pd.DataFrame(
+                columns=["Longitude", "Latitude", "predicted_price_per_m2", "cell_polygon"]
+            )
+        if gis_district_price_df.empty:
+            gis_district_price_df = build_district_price_dataframe(base_df)
+        gis_validation_df = build_boundary_validation_dataframe(base_df)
+        gis_district_validation_df = build_district_validation_dataframe(base_df)
         hanoi_boundary_geojson = load_hanoi_boundary_geojson()
         hanoi_districts_geojson = load_hanoi_districts_geojson()
     except (sqlite3.Error, SQLAlchemyError, OSError, ValueError, KeyError) as exc:
@@ -406,6 +415,7 @@ def main() -> None:
 
     active_only = st.sidebar.checkbox("Only active listings", value=True)
     try:
+        data_version = get_dashboard_data_version()
         (
             base_df,
             table_df,
@@ -418,7 +428,7 @@ def main() -> None:
             gis_district_validation_df,
             hanoi_boundary_geojson,
             hanoi_districts_geojson,
-        ) = load_data(active_only=active_only)
+        ) = load_data(active_only=active_only, data_version=data_version)
     except DashboardDataError as exc:
         st.error("The dashboard could not load the database.")
         st.caption(str(exc))

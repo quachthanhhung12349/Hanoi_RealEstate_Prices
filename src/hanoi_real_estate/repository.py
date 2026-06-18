@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterable
 from typing import Any
@@ -433,6 +434,56 @@ def count_pending_listings() -> int:
     return int(rows[0]["count"]) if rows else 0
 
 
+def replace_gis_price_surface(rows: Iterable[dict[str, object]]) -> int:
+    prepared = [_prepare_gis_price_surface_row(row) for row in rows]
+    if not is_postgres_backend():
+        raise RuntimeError("GIS cache persistence is only supported for PostgreSQL deployments.")
+
+    with get_engine().begin() as conn:
+        conn.execute(text("DELETE FROM gis_price_surface"))
+        if prepared:
+            conn.execute(text(_POSTGRES_INSERT_GIS_PRICE_SURFACE_SQL), prepared)
+    return len(prepared)
+
+
+def replace_gis_district_price(rows: Iterable[dict[str, object]]) -> int:
+    prepared = [_prepare_gis_district_price_row(row) for row in rows]
+    if not is_postgres_backend():
+        raise RuntimeError("GIS cache persistence is only supported for PostgreSQL deployments.")
+
+    with get_engine().begin() as conn:
+        conn.execute(text("DELETE FROM gis_district_price"))
+        if prepared:
+            conn.execute(text(_POSTGRES_INSERT_GIS_DISTRICT_PRICE_SQL), prepared)
+    return len(prepared)
+
+
+def fetch_cached_gis_price_surface() -> list[dict[str, Any]]:
+    if not is_postgres_backend():
+        return []
+    rows = fetch_all_rows(
+        """
+        SELECT longitude, latitude, predicted_price_per_m2, cell_polygon, updated_at
+        FROM gis_price_surface
+        ORDER BY id
+        """
+    )
+    return [dict(row) for row in rows]
+
+
+def fetch_cached_gis_district_price() -> list[dict[str, Any]]:
+    if not is_postgres_backend():
+        return []
+    rows = fetch_all_rows(
+        """
+        SELECT district_osm, district_name_normalized, avg_price_per_m2, listing_count, updated_at
+        FROM gis_district_price
+        ORDER BY avg_price_per_m2 DESC, listing_count DESC, district_osm ASC
+        """
+    )
+    return [dict(row) for row in rows]
+
+
 def _prepare_seed_record(record: dict[str, str | None]) -> dict[str, str | None]:
     return {
         "listing_id": record["listing_id"],
@@ -518,6 +569,32 @@ def _history_params(history: dict[str, object]) -> dict[str, object]:
         "ad_type": history.get("ad_type"),
         "is_active": history.get("is_active", 1),
         "content_hash": history.get("content_hash"),
+    }
+
+
+def _prepare_gis_price_surface_row(row: dict[str, object]) -> dict[str, object]:
+    polygon = row.get("cell_polygon")
+    if isinstance(polygon, str):
+        polygon_text = polygon
+    else:
+        polygon_text = json.dumps(polygon, ensure_ascii=True)
+    return {
+        "longitude": row.get("Longitude"),
+        "latitude": row.get("Latitude"),
+        "predicted_price_per_m2": row.get("predicted_price_per_m2"),
+        "cell_polygon": polygon_text,
+    }
+
+
+def _prepare_gis_district_price_row(row: dict[str, object]) -> dict[str, object]:
+    district_name_normalized = row.get("district_name_normalized")
+    if district_name_normalized is None:
+        raise ValueError("district_name_normalized is required for cached GIS district rows.")
+    return {
+        "district_osm": row.get("district_osm"),
+        "district_name_normalized": district_name_normalized,
+        "avg_price_per_m2": row.get("avg_price_per_m2"),
+        "listing_count": row.get("listing_count"),
     }
 
 
@@ -883,4 +960,40 @@ INSERT INTO listing_history (
     content_hash
 )
 VALUES (:listing_id, CURRENT_TIMESTAMP, :price_raw, :price_value_vnd, :price_per_m2_raw, :price_per_m2_value_million_vnd, :expired_at, :ad_type, :is_active, :content_hash)
+"""
+
+
+_POSTGRES_INSERT_GIS_PRICE_SURFACE_SQL = """
+INSERT INTO gis_price_surface (
+    longitude,
+    latitude,
+    predicted_price_per_m2,
+    cell_polygon,
+    updated_at
+)
+VALUES (
+    :longitude,
+    :latitude,
+    :predicted_price_per_m2,
+    :cell_polygon,
+    CURRENT_TIMESTAMP
+)
+"""
+
+
+_POSTGRES_INSERT_GIS_DISTRICT_PRICE_SQL = """
+INSERT INTO gis_district_price (
+    district_osm,
+    district_name_normalized,
+    avg_price_per_m2,
+    listing_count,
+    updated_at
+)
+VALUES (
+    :district_osm,
+    :district_name_normalized,
+    :avg_price_per_m2,
+    :listing_count,
+    CURRENT_TIMESTAMP
+)
 """

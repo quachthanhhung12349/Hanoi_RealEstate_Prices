@@ -7,13 +7,18 @@ from typing import Any
 
 import geopandas as gpd
 import numpy as np
-import osmnx as ox
 import pandas as pd
 from shapely.geometry import Point
 
-from .analytics import THAP_RUA_LAT, THAP_RUA_LON, load_dashboard_dataframe
+from .analytics import THAP_RUA_LAT, THAP_RUA_LON, ensure_dashboard_dataframe, load_dashboard_dataframe
 from .config import GIS_DATA_DIR
-from .db import fetch_all_rows
+from .db import ensure_postgres_gis_cache_tables, fetch_all_rows, is_postgres_backend
+from .repository import (
+    fetch_cached_gis_district_price,
+    fetch_cached_gis_price_surface,
+    replace_gis_district_price,
+    replace_gis_price_surface,
+)
 
 
 HANOI_BOUNDARY_PATH = GIS_DATA_DIR / "hanoi_boundary.geojson"
@@ -31,6 +36,7 @@ def load_hanoi_boundary(force_refresh: bool = False) -> gpd.GeoDataFrame:
     if not force_refresh and HANOI_BOUNDARY_PATH.exists():
         return gpd.read_file(HANOI_BOUNDARY_PATH)
 
+    ox = _import_osmnx()
     boundary = ox.geocode_to_gdf("Hanoi, Vietnam")
     boundary = boundary.to_crs(epsg=4326)
     boundary.to_file(HANOI_BOUNDARY_PATH, driver="GeoJSON")
@@ -80,8 +86,12 @@ def load_hanoi_districts_geojson(
     return json.loads(districts.to_json())
 
 
-def build_listing_geodataframe(active_only: bool = True) -> gpd.GeoDataFrame:
-    df = load_dashboard_dataframe(active_only=active_only)
+def build_listing_geodataframe(
+    df: pd.DataFrame | None = None,
+    *,
+    active_only: bool = True,
+) -> gpd.GeoDataFrame:
+    df = ensure_dashboard_dataframe(df, active_only=active_only)
     if df.empty:
         return gpd.GeoDataFrame(df.copy(), geometry=[], crs="EPSG:4326")
 
@@ -93,8 +103,12 @@ def build_listing_geodataframe(active_only: bool = True) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(points, geometry=geometry, crs="EPSG:4326")
 
 
-def build_boundary_validation_dataframe(active_only: bool = True) -> pd.DataFrame:
-    listings_gdf = build_listing_geodataframe(active_only=active_only)
+def build_boundary_validation_dataframe(
+    df: pd.DataFrame | None = None,
+    *,
+    active_only: bool = True,
+) -> pd.DataFrame:
+    listings_gdf = build_listing_geodataframe(df, active_only=active_only)
     if listings_gdf.empty:
         return pd.DataFrame(
             columns=[
@@ -127,8 +141,12 @@ def build_boundary_validation_dataframe(active_only: bool = True) -> pd.DataFram
     return pd.DataFrame(joined[columns]).reset_index(drop=True)
 
 
-def build_district_validation_dataframe(active_only: bool = True) -> pd.DataFrame:
-    listings_gdf = build_listing_geodataframe(active_only=active_only)
+def build_district_validation_dataframe(
+    df: pd.DataFrame | None = None,
+    *,
+    active_only: bool = True,
+) -> pd.DataFrame:
+    listings_gdf = build_listing_geodataframe(df, active_only=active_only)
     if listings_gdf.empty:
         return pd.DataFrame(
             columns=[
@@ -193,8 +211,12 @@ def build_district_validation_dataframe(active_only: bool = True) -> pd.DataFram
     return pd.DataFrame(joined[columns]).reset_index(drop=True)
 
 
-def build_pydeck_point_dataframe(active_only: bool = True) -> pd.DataFrame:
-    gdf = build_listing_geodataframe(active_only=active_only)
+def build_pydeck_point_dataframe(
+    df: pd.DataFrame | None = None,
+    *,
+    active_only: bool = True,
+) -> pd.DataFrame:
+    gdf = build_listing_geodataframe(df, active_only=active_only)
     if gdf.empty:
         return pd.DataFrame(
             columns=[
@@ -218,8 +240,12 @@ def build_pydeck_point_dataframe(active_only: bool = True) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
-def build_price_hexbin_dataframe(active_only: bool = True) -> pd.DataFrame:
-    frame = build_pydeck_point_dataframe(active_only=active_only)
+def build_price_hexbin_dataframe(
+    df: pd.DataFrame | None = None,
+    *,
+    active_only: bool = True,
+) -> pd.DataFrame:
+    frame = build_pydeck_point_dataframe(df, active_only=active_only)
     if frame.empty:
         frame = frame.copy()
         frame["Giá/m² clipped"] = pd.Series(dtype="float64")
@@ -236,14 +262,18 @@ def build_price_hexbin_dataframe(active_only: bool = True) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
-def build_district_price_dataframe(active_only: bool = True) -> pd.DataFrame:
+def build_district_price_dataframe(
+    df: pd.DataFrame | None = None,
+    *,
+    active_only: bool = True,
+) -> pd.DataFrame:
     columns = [
         "district_osm",
         "district_name_normalized",
         "avg_price_per_m2",
         "listing_count",
     ]
-    listings_gdf = build_listing_geodataframe(active_only=active_only)
+    listings_gdf = build_listing_geodataframe(df, active_only=active_only)
     if listings_gdf.empty:
         return pd.DataFrame(columns=columns)
 
@@ -280,13 +310,15 @@ def build_district_price_dataframe(active_only: bool = True) -> pd.DataFrame:
 
 
 def build_interpolated_price_surface_dataframe(
+    df: pd.DataFrame | None = None,
+    *,
     active_only: bool = True,
     cell_size_meters: float = 400.0,
     k_neighbors: int = 10,
     power: float = 2.0,
     max_distance_meters: float = 12000.0,
 ) -> pd.DataFrame:
-    points = build_price_hexbin_dataframe(active_only=active_only)
+    points = build_price_hexbin_dataframe(df, active_only=active_only)
     if points.empty:
         return pd.DataFrame(
             columns=[
@@ -399,6 +431,77 @@ def build_interpolated_price_surface_dataframe(
     return surface_df.reset_index(drop=True)
 
 
+def refresh_cached_gis_layers(active_only: bool = True) -> dict[str, int]:
+    if not is_postgres_backend():
+        raise RuntimeError("Cached GIS layers require PostgreSQL.")
+
+    ensure_postgres_gis_cache_tables()
+    base_df = load_dashboard_dataframe(active_only=active_only)
+    district_df = build_district_price_dataframe(base_df, active_only=active_only)
+    surface_df = build_interpolated_price_surface_dataframe(base_df, active_only=active_only)
+
+    district_rows = replace_gis_district_price(district_df.to_dict(orient="records"))
+    surface_rows = replace_gis_price_surface(surface_df.to_dict(orient="records"))
+    return {
+        "district_rows": district_rows,
+        "surface_rows": surface_rows,
+    }
+
+
+def load_cached_gis_price_surface_dataframe() -> pd.DataFrame:
+    if is_postgres_backend():
+        ensure_postgres_gis_cache_tables()
+    rows = fetch_cached_gis_price_surface()
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "Longitude",
+                "Latitude",
+                "predicted_price_per_m2",
+                "cell_polygon",
+            ]
+        )
+
+    frame = pd.DataFrame(rows).rename(
+        columns={
+            "longitude": "Longitude",
+            "latitude": "Latitude",
+        }
+    )
+    frame["Longitude"] = pd.to_numeric(frame["Longitude"], errors="coerce")
+    frame["Latitude"] = pd.to_numeric(frame["Latitude"], errors="coerce")
+    frame["predicted_price_per_m2"] = pd.to_numeric(frame["predicted_price_per_m2"], errors="coerce")
+    frame["cell_polygon"] = frame["cell_polygon"].apply(_deserialize_cell_polygon)
+    return frame[["Longitude", "Latitude", "predicted_price_per_m2", "cell_polygon"]].reset_index(drop=True)
+
+
+def load_cached_gis_district_price_dataframe() -> pd.DataFrame:
+    if is_postgres_backend():
+        ensure_postgres_gis_cache_tables()
+    rows = fetch_cached_gis_district_price()
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "district_osm",
+                "district_name_normalized",
+                "avg_price_per_m2",
+                "listing_count",
+            ]
+        )
+
+    frame = pd.DataFrame(rows)
+    frame["avg_price_per_m2"] = pd.to_numeric(frame["avg_price_per_m2"], errors="coerce")
+    frame["listing_count"] = pd.to_numeric(frame["listing_count"], errors="coerce").fillna(0).astype(int)
+    return frame[
+        [
+            "district_osm",
+            "district_name_normalized",
+            "avg_price_per_m2",
+            "listing_count",
+        ]
+    ].reset_index(drop=True)
+
+
 def get_hanoi_center_view_state() -> dict[str, float]:
     return {
         "latitude": THAP_RUA_LAT,
@@ -413,6 +516,7 @@ def build_osmnx_graph(
     network_type: str = DEFAULT_NETWORK_TYPE,
     force_refresh: bool = False,
 ):
+    ox = _import_osmnx()
     ensure_gis_data_dir()
     graph_path = GIS_DATA_DIR / f"hanoi_{network_type}.graphml"
     if graph_path.exists() and not force_refresh:
@@ -430,6 +534,7 @@ def calculate_shortest_path_to_hoan_kiem(
     longitude: float,
     network_type: str = DEFAULT_NETWORK_TYPE,
 ) -> dict[str, Any]:
+    ox = _import_osmnx()
     graph = build_osmnx_graph(network_type=network_type)
     origin_node = ox.distance.nearest_nodes(graph, X=longitude, Y=latitude)
     destination_node = ox.distance.nearest_nodes(graph, X=THAP_RUA_LON, Y=THAP_RUA_LAT)
@@ -513,6 +618,7 @@ def _prepare_districts_dataframe(districts: gpd.GeoDataFrame) -> gpd.GeoDataFram
 
 
 def _geocode_hanoi_districts() -> gpd.GeoDataFrame:
+    ox = _import_osmnx()
     rows: list[gpd.GeoDataFrame] = []
     for district_name in _fetch_known_hanoi_district_names():
         query = {"city": "Hà Nội", "country": "Việt Nam", "county": district_name}
@@ -554,3 +660,24 @@ def _fetch_known_hanoi_district_names() -> list[str]:
     """
     rows = fetch_all_rows(query)
     return [str(row["district"]).strip() for row in rows if row["district"]]
+
+
+def _deserialize_cell_polygon(value: Any) -> list[list[float]]:
+    if isinstance(value, str):
+        parsed = json.loads(value)
+        if isinstance(parsed, list):
+            return parsed
+        return []
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def _import_osmnx():
+    try:
+        import osmnx as ox
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "osmnx is required for remote GIS graph/geocoding operations but is not installed in this environment."
+        ) from exc
+    return ox

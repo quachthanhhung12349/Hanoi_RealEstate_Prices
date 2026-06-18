@@ -43,6 +43,42 @@ def read_sql_dataframe(query: str, params: dict[str, Any] | None = None) -> pd.D
         return pd.read_sql_query(query, conn, params=params)
 
 
+def get_dashboard_data_version() -> str:
+    if is_postgres_backend():
+        ensure_postgres_gis_cache_tables()
+        rows = fetch_all_rows(
+            """
+            SELECT json_build_array(
+                COALESCE((SELECT MAX(last_seen_at)::text FROM listing), ''),
+                COALESCE((SELECT MAX(last_scraped_at)::text FROM listing_current), ''),
+                COALESCE((SELECT MAX(last_geocoded_at)::text FROM address), ''),
+                (SELECT COUNT(*)::text FROM listing),
+                COALESCE((SELECT MAX(updated_at)::text FROM gis_price_surface), ''),
+                COALESCE((SELECT MAX(updated_at)::text FROM gis_district_price), ''),
+                (SELECT COUNT(*)::text FROM gis_price_surface),
+                (SELECT COUNT(*)::text FROM gis_district_price)
+            )::text AS version
+            """
+        )
+        return str(rows[0]["version"]) if rows else "[]"
+
+    rows = fetch_all_rows(
+        """
+        SELECT json_array(
+            COALESCE((SELECT MAX(last_seen_at) FROM listing), ''),
+            COALESCE((SELECT MAX(last_scraped_at) FROM listing_current), ''),
+            COALESCE((SELECT MAX(last_geocoded_at) FROM address), ''),
+            (SELECT COUNT(*) FROM listing),
+            '',
+            '',
+            0,
+            0
+        ) AS version
+        """
+    )
+    return str(rows[0]["version"]) if rows else "[]"
+
+
 def fetch_all_rows(query: str, params: dict[str, Any] | tuple[Any, ...] | list[Any] | None = None) -> list[Any]:
     if is_postgres_backend():
         with get_engine().connect() as conn:
@@ -65,6 +101,38 @@ def init_db(schema_path: Path | None = None) -> None:
 
     with get_connection() as conn:
         conn.executescript(schema_file.read_text(encoding="utf-8"))
+
+
+def ensure_postgres_gis_cache_tables() -> None:
+    if not is_postgres_backend():
+        return
+
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS gis_price_surface (
+            id BIGSERIAL PRIMARY KEY,
+            longitude DOUBLE PRECISION NOT NULL,
+            latitude DOUBLE PRECISION NOT NULL,
+            predicted_price_per_m2 DOUBLE PRECISION NOT NULL,
+            cell_polygon TEXT NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS gis_district_price (
+            district_name_normalized TEXT PRIMARY KEY,
+            district_osm TEXT NOT NULL,
+            avg_price_per_m2 DOUBLE PRECISION NOT NULL,
+            listing_count INTEGER NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_gis_price_surface_updated_at ON gis_price_surface (updated_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_gis_district_price_updated_at ON gis_district_price (updated_at DESC)",
+    ]
+    with get_engine().begin() as conn:
+        for statement in statements:
+            conn.execute(text(statement))
 
 
 def ensure_postgres_serial_sequence(table_name: str, column_name: str) -> None:

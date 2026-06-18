@@ -16,6 +16,7 @@ from hanoi_real_estate.firecrawl import (
     parse_listing_detail_from_firecrawl,
 )
 from hanoi_real_estate.parsers import extract_listing_id, normalize_detail_payload
+from hanoi_real_estate.gis import refresh_cached_gis_layers
 from hanoi_real_estate.repository import (
     fetch_existing_listing_ids,
     fetch_recent_scraped_listing_ids,
@@ -131,24 +132,38 @@ def main() -> None:
         mock_dir=args.mock_dir,
     )
 
-    if not urls:
-        print("No new URLs discovered.")
-        return
-
     ok = 0
     fail = 0
-    for url in urls:
-        success, message = process_url(client, url, args.dry_run, args.mock_dir)
-        if success:
-            ok += 1
-            print(f"OK {message}")
-        else:
-            fail += 1
-            print(f"FAIL {message}")
+    if not urls:
+        print("No new URLs discovered.")
+    else:
+        for url in urls:
+            success, message = process_url(client, url, args.dry_run, args.mock_dir)
+            if success:
+                ok += 1
+                print(f"OK {message}")
+            else:
+                fail += 1
+                print(f"FAIL {message}")
+
+    district_rows = 0
+    surface_rows = 0
+    if args.dry_run:
+        print("Skipped GIS refresh because this is a dry run.")
+    else:
+        refresh_result = refresh_cached_gis_layers(active_only=True)
+        district_rows = refresh_result["district_rows"]
+        surface_rows = refresh_result["surface_rows"]
+        print(
+            "GIS refresh complete: "
+            f"{district_rows} district rows, {surface_rows} surface rows."
+        )
 
     print(f"Discovered new URLs: {len(urls)}")
     print(f"Processed successfully: {ok}")
     print(f"Failed: {fail}")
+    print(f"GIS district rows: {district_rows}")
+    print(f"GIS surface rows: {surface_rows}")
     print(f"Dry run: {'yes' if args.dry_run else 'no'}")
 
 

@@ -91,6 +91,23 @@ CREATE TABLE IF NOT EXISTS scrape_errors (
         FOREIGN KEY (listing_id) REFERENCES listing (listing_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS gis_price_surface (
+    id BIGSERIAL PRIMARY KEY,
+    longitude DOUBLE PRECISION NOT NULL,
+    latitude DOUBLE PRECISION NOT NULL,
+    predicted_price_per_m2 DOUBLE PRECISION NOT NULL,
+    cell_polygon TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS gis_district_price (
+    district_name_normalized TEXT PRIMARY KEY,
+    district_osm TEXT NOT NULL,
+    avg_price_per_m2 DOUBLE PRECISION NOT NULL,
+    listing_count INTEGER NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_listing_status ON listing (status);
 CREATE INDEX IF NOT EXISTS idx_listing_active_status ON listing (is_active, status);
 CREATE INDEX IF NOT EXISTS idx_listing_last_seen ON listing (last_seen_at);
@@ -102,6 +119,8 @@ CREATE INDEX IF NOT EXISTS idx_address_city ON address (city);
 CREATE INDEX IF NOT EXISTS idx_address_lat_lon ON address (latitude, longitude);
 CREATE INDEX IF NOT EXISTS idx_history_listing_scraped ON listing_history (listing_id, scraped_at DESC);
 CREATE INDEX IF NOT EXISTS idx_errors_stage_time ON scrape_errors (stage, happened_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gis_price_surface_updated_at ON gis_price_surface (updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gis_district_price_updated_at ON gis_district_price (updated_at DESC);
 
 CREATE OR REPLACE VIEW listing_dashboard_view AS
 SELECT

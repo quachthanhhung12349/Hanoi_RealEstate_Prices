@@ -23,6 +23,7 @@ At this stage, the system supports:
   - table view
   - distance to Hanoi center vs price per m²
   - regional house price statistics
+  - GIS preview backed by precomputed PostgreSQL cache tables
 
 ## What Phase 1 is about
 
@@ -96,6 +97,22 @@ Run the dashboard:
 ```bash
 ./scripts/run_dashboard.sh
 ```
+
+Run the daily Firecrawl sync plus GIS refresh:
+
+```bash
+PYTHONPATH=src python3 scripts/daily_firecrawl_sync.py
+```
+
+## Deployment Notes
+
+For Streamlit Community Cloud:
+
+- use `requirements.txt` for the hosted dashboard dependency set
+- configure `DATABASE_URL` in Streamlit app secrets
+- keep scraping/manual sync outside Streamlit
+- run the daily Firecrawl sync in a worker environment that installs `requirements-worker.txt`
+- the daily sync refreshes cached GIS layers in PostgreSQL, and the hosted dashboard reads those cached layers instead of rebuilding the interpolated surface live
 
 ## Planned Next Phases
 

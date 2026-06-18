@@ -9,3 +9,7 @@ pydeck>=0.9,<1.0
 pyogrio>=0.10,<1.0
 requests>=2.32,<3.0
 shapely>=2.0,<3.0
+selenium>=4.24,<5.0
+tqdm>=4.66,<5.0
+undetected-chromedriver==3.5.5
+osmnx>=2.0,<3.0

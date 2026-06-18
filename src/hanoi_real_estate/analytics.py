@@ -65,6 +65,16 @@ def load_dashboard_dataframe(active_only: bool = True) -> pd.DataFrame:
     return prepare_dashboard_dataframe(df)
 
 
+def ensure_dashboard_dataframe(
+    df: pd.DataFrame | None = None,
+    *,
+    active_only: bool = True,
+) -> pd.DataFrame:
+    if df is None:
+        return load_dashboard_dataframe(active_only=active_only)
+    return df.copy()
+
+
 def prepare_dashboard_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     working = df.copy()
 
@@ -128,8 +138,12 @@ def prepare_dashboard_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return working
 
 
-def build_table_dataframe(active_only: bool = True) -> pd.DataFrame:
-    df = load_dashboard_dataframe(active_only=active_only)
+def build_table_dataframe(
+    df: pd.DataFrame | None = None,
+    *,
+    active_only: bool = True,
+) -> pd.DataFrame:
+    df = ensure_dashboard_dataframe(df, active_only=active_only)
     if df.empty:
         return df
     columns = [
@@ -160,8 +174,12 @@ def build_table_dataframe(active_only: bool = True) -> pd.DataFrame:
     return df[columns]
 
 
-def build_correlation_dataframe(active_only: bool = True) -> pd.DataFrame:
-    df = load_dashboard_dataframe(active_only=active_only)
+def build_correlation_dataframe(
+    df: pd.DataFrame | None = None,
+    *,
+    active_only: bool = True,
+) -> pd.DataFrame:
+    df = ensure_dashboard_dataframe(df, active_only=active_only)
     if df.empty:
         return pd.DataFrame(
             columns=["dist_to_HN_center", "Giá/m²", "Latitude", "Longitude", "Địa chỉ", "Mã tin"]
@@ -183,8 +201,12 @@ def build_correlation_dataframe(active_only: bool = True) -> pd.DataFrame:
     return plot_df.reset_index(drop=True)
 
 
-def build_region_stats_dataframe(active_only: bool = True) -> pd.DataFrame:
-    df = load_dashboard_dataframe(active_only=active_only)
+def build_region_stats_dataframe(
+    df: pd.DataFrame | None = None,
+    *,
+    active_only: bool = True,
+) -> pd.DataFrame:
+    df = ensure_dashboard_dataframe(df, active_only=active_only)
     if df.empty:
         return pd.DataFrame(
             columns=["Huyện", "avg_price_billion_vnd", "avg_price_per_m2_million_vnd", "listing_count"]
@@ -211,15 +233,23 @@ def build_region_stats_dataframe(active_only: bool = True) -> pd.DataFrame:
     return grouped.reset_index(drop=True)
 
 
-def build_price_per_m2_by_region_dataframe(active_only: bool = True) -> pd.DataFrame:
-    stats = build_region_stats_dataframe(active_only=active_only)
+def build_price_per_m2_by_region_dataframe(
+    df: pd.DataFrame | None = None,
+    *,
+    active_only: bool = True,
+) -> pd.DataFrame:
+    stats = build_region_stats_dataframe(df, active_only=active_only)
     if stats.empty:
         return stats
     return stats[["Huyện", "avg_price_per_m2_million_vnd", "listing_count"]].copy()
 
 
-def build_total_price_by_region_dataframe(active_only: bool = True) -> pd.DataFrame:
-    stats = build_region_stats_dataframe(active_only=active_only)
+def build_total_price_by_region_dataframe(
+    df: pd.DataFrame | None = None,
+    *,
+    active_only: bool = True,
+) -> pd.DataFrame:
+    stats = build_region_stats_dataframe(df, active_only=active_only)
     if stats.empty:
         return stats
     return stats[["Huyện", "avg_price_billion_vnd", "listing_count"]].copy()

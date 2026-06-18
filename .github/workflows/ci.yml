@@ -36,3 +36,14 @@ jobs:
           PYTHONPATH: src
         run: |
           python scripts/init_db.py
+      - name: Verify demo database loads
+        env:
+            PYTHONPATH: src
+            HANOI_RE_DB_PATH: data/demo.sqlite3
+        run: |
+            python - <<'PY'
+            from hanoi_real_estate.analytics import load_dashboard_dataframe
+            df = load_dashboard_dataframe(active_only=True)
+            assert len(df) > 0
+            print(f"Loaded {len(df)} demo rows")
+            PY

@@ -164,6 +164,20 @@ The current code looks for Chrome in these default locations:
 
 If Chrome is installed somewhere else, update `CHROME_BINARY` in `src/hanoi_real_estate/config.py`.
 
+## Local and Demo Databases
+
+The project currently uses SQLite locally while Phase 3 PostgreSQL/Supabase support is being prepared.
+
+Database path behavior:
+
+- `data/bds_live.sqlite3`: local runtime database used by scraping/import workflows
+- `data/demo.sqlite3`: temporary bundled demo database for public/demo dashboard use
+- `HANOI_RE_DB_PATH`: optional environment variable to force a specific SQLite database path
+
+By default, the app uses `data/bds_live.sqlite3` if it exists. If it does not exist, it falls back to `data/demo.sqlite3`.
+
+The live runtime database is ignored by git so scraper runs do not constantly dirty the working tree. The demo database is intentionally kept as a temporary public sample until the project fully transitions to hosted PostgreSQL.
+
 ## Useful Commands
 
 Initialize the database:

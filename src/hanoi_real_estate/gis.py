@@ -693,20 +693,32 @@ def build_district_price_geojson(district_geojson: dict, district_price_df: pd.D
     if not district_geojson.get("features"):
         return {"type": "FeatureCollection", "features": []}
 
-    lookup = {}
+    lookup_by_name = {}
+    lookup_by_normalized_name = {}
     if not district_price_df.empty:
         for _, row in district_price_df.iterrows():
-            lookup[str(row["district_osm"])] = {
+            stats = {
                 "avg_price_per_m2": float(row["avg_price_per_m2"]),
                 "listing_count": int(row["listing_count"]),
                 "fill_color": _price_to_color(row["avg_price_per_m2"]),
             }
+            lookup_by_name[str(row["district_osm"])] = stats
+            normalized_name = normalize_district_name(row.get("district_name_normalized"))
+            if normalized_name:
+                lookup_by_normalized_name[normalized_name] = stats
 
     features = []
     for feature in district_geojson.get("features", []):
         properties = dict(feature.get("properties", {}))
-        district_name = str(properties.get("district_name") or properties.get("name") or "")
-        stats = lookup.get(district_name)
+        district_name = _district_name_from_feature_properties(properties)
+        normalized_district_name = normalize_district_name(
+            properties.get("district_name_normalized") or district_name
+        )
+        stats = lookup_by_normalized_name.get(normalized_district_name) if normalized_district_name else None
+        if not stats:
+            stats = lookup_by_name.get(district_name)
+        properties["district_name"] = district_name
+        properties["district_name_normalized"] = normalized_district_name
         if stats:
             properties.update(stats)
         else:
@@ -721,6 +733,22 @@ def build_district_price_geojson(district_geojson: dict, district_price_df: pd.D
             }
         )
     return {"type": "FeatureCollection", "features": features}
+
+
+def _district_name_from_feature_properties(properties: dict[str, Any]) -> str:
+    for key in [
+        "district_name",
+        "name:vi",
+        "name",
+        "NAME_2",
+        "VARNAME_2",
+        "official_name",
+        "display_name",
+    ]:
+        value = properties.get(key)
+        if isinstance(value, str) and value.strip() and value.strip().upper() != "NA":
+            return value.strip()
+    return ""
 
 
 def _price_to_color(value: float) -> list[int]:

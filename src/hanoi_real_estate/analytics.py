@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from .db import read_sql_dataframe
@@ -84,29 +85,38 @@ def prepare_dashboard_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     working["Địa chỉ"] = working["full_address"]
     working["Địa chỉ 1"] = working["address_line_1"]
     working["Địa chỉ 2"] = working["address_line_2"]
-    working["Mức giá"] = working.apply(_display_total_price, axis=1)
-    working["Giá/m²"] = working.apply(_display_price_per_m2, axis=1)
+    working["Mức giá"] = _display_total_price_series(
+        working["price_raw"],
+        working["price_value_billion_vnd"],
+    )
+    working["Giá/m²"] = _display_price_per_m2_series(
+        working["price_per_m2_raw"],
+        working["price_per_m2_value_million_vnd"],
+    )
     working["Số phòng ngủ"] = working["bedrooms"]
     working["Huyện"] = working["raw_district"].fillna(working["district"])
-    working["Diện tích"] = working.apply(
-        lambda row: _display_metric(row.get("area_raw"), row.get("area_m2"), "m²"),
-        axis=1,
+    working["Diện tích"] = _display_metric_series(
+        working["area_raw"],
+        working["area_m2"],
+        "m²",
     )
-    working["Mặt tiền"] = working.apply(
-        lambda row: _display_metric(None, row.get("front_length_m"), "m"),
-        axis=1,
+    working["Mặt tiền"] = _display_metric_series(
+        None,
+        working["front_length_m"],
+        "m",
     )
-    working["Đường vào"] = working.apply(
-        lambda row: _display_metric(None, row.get("road_size_m"), "m"),
-        axis=1,
+    working["Đường vào"] = _display_metric_series(
+        None,
+        working["road_size_m"],
+        "m",
     )
     working["Hướng nhà"] = working["direction"]
     working["Hướng ban công"] = working["balcony_direction"]
-    working["Số tầng"] = working["floors"].apply(_display_integer_metric)
-    working["Số toilet"] = working["toilets"].apply(_display_integer_metric)
+    working["Số tầng"] = _display_integer_series(working["floors"])
+    working["Số toilet"] = _display_integer_series(working["toilets"])
     working["Pháp lý"] = working["legal_status"]
-    working["Ngày đăng"] = working["published_at"].apply(_iso_to_ddmmyyyy)
-    working["Ngày hết hạn"] = working["expired_at"].apply(_iso_to_ddmmyyyy)
+    working["Ngày đăng"] = _iso_to_ddmmyyyy_series(working["published_at"])
+    working["Ngày hết hạn"] = _iso_to_ddmmyyyy_series(working["expired_at"])
     working["Loại tin"] = working["ad_type"]
     working["Latitude"] = pd.to_numeric(working["latitude"], errors="coerce")
     working["Longitude"] = pd.to_numeric(working["longitude"], errors="coerce")
@@ -114,25 +124,17 @@ def prepare_dashboard_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     working["Mức giá trị"] = pd.to_numeric(working["price_value_billion_vnd"], errors="coerce")
     working["Giá/m² trị"] = pd.to_numeric(working["price_per_m2_value_million_vnd"], errors="coerce")
     working["Diện tích trị"] = pd.to_numeric(working["area_m2"], errors="coerce")
-    working["dist_to_HN_center"] = working.apply(
-        lambda row: haversine_km(
-            row.get("Latitude"),
-            row.get("Longitude"),
-            THAP_RUA_LAT,
-            THAP_RUA_LON,
-        ),
-        axis=1,
+    working["dist_to_HN_center"] = _vectorized_haversine_km(
+        working["Latitude"],
+        working["Longitude"],
+        THAP_RUA_LAT,
+        THAP_RUA_LON,
     )
-    working["direction_to_HN_center"] = working.apply(
-        lambda row: bearing_to_direction(
-            bearing_degrees(
-                THAP_RUA_LAT,
-                THAP_RUA_LON,
-                row.get("Latitude"),
-                row.get("Longitude"),
-            )
-        ),
-        axis=1,
+    working["direction_to_HN_center"] = _vectorized_bearing_to_direction(
+        working["Latitude"],
+        working["Longitude"],
+        THAP_RUA_LAT,
+        THAP_RUA_LON,
     )
 
     return working
@@ -376,3 +378,117 @@ def _iso_to_ddmmyyyy(value: Any) -> str | None:
     except Exception:
         return text
     return parsed.strftime("%d/%m/%Y")
+
+
+def _display_total_price_series(raw: pd.Series, value: pd.Series) -> pd.Series:
+    return _prefer_raw_or_formatted_value(
+        raw,
+        value,
+        lambda numeric: f"{numeric:,.2f} tỷ".replace(",", "X").replace(".", ",").replace("X", "."),
+    )
+
+
+def _display_price_per_m2_series(raw: pd.Series, value: pd.Series) -> pd.Series:
+    return _prefer_raw_or_formatted_value(
+        raw,
+        value,
+        lambda numeric: f"~{numeric:,.2f} triệu/m²".replace(",", "X").replace(".", ",").replace("X", "."),
+    )
+
+
+def _display_metric_series(raw: pd.Series | None, value: pd.Series, unit: str) -> pd.Series:
+    return _prefer_raw_or_formatted_value(
+        raw,
+        value,
+        lambda numeric: f"{numeric:,.2f} {unit}".replace(",", "X").replace(".", ",").replace("X", "."),
+    )
+
+
+def _prefer_raw_or_formatted_value(
+    raw: pd.Series | None,
+    value: pd.Series,
+    formatter,
+) -> pd.Series:
+    numeric = pd.to_numeric(value, errors="coerce")
+    formatted = numeric.map(lambda item: formatter(float(item)) if pd.notna(item) else None)
+    if raw is None:
+        return formatted
+
+    raw_text = raw.astype("string").str.strip()
+    has_raw = raw_text.notna() & raw_text.ne("")
+    return raw_text.where(has_raw, formatted)
+
+
+def _display_integer_series(value: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(value, errors="coerce")
+    formatted = numeric.round().astype("Int64").astype("string")
+    return formatted.mask(numeric.isna(), None)
+
+
+def _iso_to_ddmmyyyy_series(value: pd.Series) -> pd.Series:
+    text = value.astype("string").str.strip()
+    parsed = pd.to_datetime(text, errors="coerce")
+    formatted = parsed.dt.strftime("%d/%m/%Y")
+    return formatted.where(parsed.notna(), text).mask(text.isna() | text.eq(""), None)
+
+
+def _vectorized_haversine_km(
+    latitudes: pd.Series,
+    longitudes: pd.Series,
+    target_latitude: float,
+    target_longitude: float,
+) -> pd.Series:
+    lat = pd.to_numeric(latitudes, errors="coerce").to_numpy(dtype=float)
+    lon = pd.to_numeric(longitudes, errors="coerce").to_numpy(dtype=float)
+    valid = ~np.isnan(lat) & ~np.isnan(lon)
+    distances = np.full(lat.shape, np.nan, dtype=float)
+    if not valid.any():
+        return pd.Series(distances, index=latitudes.index)
+
+    lat1 = np.radians(lat[valid])
+    lon1 = np.radians(lon[valid])
+    lat2 = math.radians(float(target_latitude))
+    lon2 = math.radians(float(target_longitude))
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    distances[valid] = 2 * 6371.0 * np.arcsin(np.sqrt(a))
+    return pd.Series(distances, index=latitudes.index)
+
+
+def _vectorized_bearing_to_direction(
+    latitudes: pd.Series,
+    longitudes: pd.Series,
+    target_latitude: float,
+    target_longitude: float,
+) -> pd.Series:
+    lat = pd.to_numeric(latitudes, errors="coerce").to_numpy(dtype=float)
+    lon = pd.to_numeric(longitudes, errors="coerce").to_numpy(dtype=float)
+    valid = ~np.isnan(lat) & ~np.isnan(lon)
+    directions = np.full(lat.shape, pd.NA, dtype=object)
+    if not valid.any():
+        return pd.Series(directions, index=latitudes.index, dtype="object")
+
+    phi1 = np.radians(lat[valid])
+    phi2 = math.radians(float(target_latitude))
+    dlambda = math.radians(float(target_longitude)) - np.radians(lon[valid])
+
+    x = np.sin(dlambda) * np.cos(phi2)
+    y = np.cos(phi1) * np.sin(phi2) - np.sin(phi1) * np.cos(phi2) * np.cos(dlambda)
+    bearing = (np.degrees(np.arctan2(x, y)) + 360) % 360
+    direction_names = np.array(
+        [
+            "North",
+            "Northeast",
+            "East",
+            "Southeast",
+            "South",
+            "Southwest",
+            "West",
+            "Northwest",
+        ],
+        dtype=object,
+    )
+    indices = ((bearing + 22.5) // 45).astype(int) % 8
+    directions[valid] = direction_names[indices]
+    return pd.Series(directions, index=latitudes.index, dtype="object")

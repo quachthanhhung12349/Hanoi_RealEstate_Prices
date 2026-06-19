@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from typing import Any
 
 import pandas as pd
 import plotly.express as px
@@ -15,7 +16,7 @@ from hanoi_real_estate.analytics import (
     build_table_dataframe,
     load_dashboard_dataframe,
 )
-from hanoi_real_estate.db import get_dashboard_data_version
+from hanoi_real_estate.db import get_dashboard_data_version, get_gis_cache_version
 from hanoi_real_estate.gis import (
     build_boundary_validation_dataframe,
     build_district_validation_dataframe,
@@ -44,7 +45,7 @@ st.set_page_config(
 
 
 @st.cache_data(show_spinner=False)
-def load_data(
+def load_core_data(
     active_only: bool,
     data_version: str,
 ) -> tuple[
@@ -52,37 +53,12 @@ def load_data(
     pd.DataFrame,
     pd.DataFrame,
     pd.DataFrame,
-    pd.DataFrame,
-    pd.DataFrame,
-    pd.DataFrame,
-    pd.DataFrame,
-    pd.DataFrame,
-    dict,
-    dict,
-    dict,
 ]:
     try:
         base_df = load_dashboard_dataframe(active_only=active_only)
         table_df = build_table_dataframe(base_df)
         correlation_df = build_correlation_dataframe(base_df)
         region_stats_df = build_region_stats_dataframe(base_df)
-        gis_points_df = build_pydeck_point_dataframe(base_df)
-        gis_surface_df = load_cached_gis_price_surface_dataframe()
-        gis_district_price_df = load_cached_gis_district_price_dataframe()
-        if gis_surface_df.empty:
-            gis_surface_df = build_interpolated_price_surface_dataframe(base_df)
-        if gis_district_price_df.empty:
-            gis_district_price_df = build_district_price_dataframe(base_df)
-        gis_validation_df = build_boundary_validation_dataframe(base_df)
-        gis_district_validation_df = build_district_validation_dataframe(base_df)
-        hanoi_boundary_geojson = load_hanoi_boundary_geojson()
-        hanoi_districts_geojson = load_hanoi_districts_geojson()
-        district_price_geojson = load_cached_gis_district_choropleth()
-        if not district_price_geojson.get("features"):
-            district_price_geojson = build_district_price_geojson(
-                hanoi_districts_geojson,
-                gis_district_price_df,
-            )
     except (sqlite3.Error, SQLAlchemyError, OSError, ValueError, KeyError) as exc:
         raise DashboardDataError(_friendly_data_error(exc)) from exc
     return (
@@ -90,15 +66,73 @@ def load_data(
         table_df,
         correlation_df,
         region_stats_df,
-        gis_points_df,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def load_gis_layers(
+    _base_df: pd.DataFrame,
+    active_only: bool,
+    data_version: str,
+    gis_cache_version: str,
+    include_surface: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    try:
+        if include_surface:
+            gis_surface_df = load_cached_gis_price_surface_dataframe()
+            if gis_surface_df.empty:
+                gis_surface_df = build_interpolated_price_surface_dataframe(
+                    _base_df,
+                    active_only=active_only,
+                    cell_size_meters=800.0,
+                )
+        else:
+            gis_surface_df = pd.DataFrame(
+                columns=[
+                    "Longitude",
+                    "Latitude",
+                    "predicted_price_per_m2",
+                    "cell_polygon",
+                ]
+            )
+        gis_district_price_df = load_cached_gis_district_price_dataframe()
+        if gis_district_price_df.empty:
+            gis_district_price_df = build_district_price_dataframe(
+                _base_df,
+                active_only=active_only,
+            )
+        hanoi_boundary_geojson = load_hanoi_boundary_geojson()
+        hanoi_districts_geojson = load_hanoi_districts_geojson()
+        district_price_geojson = load_cached_gis_district_choropleth()
+        if _needs_district_choropleth_rebuild(district_price_geojson) and not gis_district_price_df.empty:
+            district_price_geojson = build_district_price_geojson(
+                hanoi_districts_geojson,
+                gis_district_price_df,
+            )
+    except (sqlite3.Error, SQLAlchemyError, OSError, ValueError, KeyError) as exc:
+        raise DashboardDataError(_friendly_data_error(exc)) from exc
+    return (
         gis_surface_df,
         gis_district_price_df,
-        gis_validation_df,
-        gis_district_validation_df,
         district_price_geojson,
         hanoi_boundary_geojson,
         hanoi_districts_geojson,
     )
+
+
+@st.cache_data(show_spinner=False)
+def load_gis_listing_data(
+    _base_df: pd.DataFrame,
+    active_only: bool,
+    data_version: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    try:
+        gis_points_df = build_pydeck_point_dataframe(_base_df)
+        gis_validation_df = build_boundary_validation_dataframe(_base_df, active_only=active_only)
+        gis_district_validation_df = build_district_validation_dataframe(_base_df, active_only=active_only)
+    except (sqlite3.Error, SQLAlchemyError, OSError, ValueError, KeyError) as exc:
+        raise DashboardDataError(_friendly_data_error(exc)) from exc
+    return gis_points_df, gis_validation_df, gis_district_validation_df
 
 
 def apply_filters(
@@ -268,6 +302,7 @@ def render_gis_tab(
     district_price_geojson: dict,
     hanoi_boundary_geojson: dict,
     hanoi_districts_geojson: dict,
+    layer_mode: str,
 ) -> None:
     st.subheader("GIS Preview")
     if gis_points_df.empty:
@@ -280,14 +315,21 @@ def render_gis_tab(
     point_map_df = point_map_df.merge(district_lookup, on="Mã tin", how="left")
     point_map_df["inside_hanoi"] = point_map_df["inside_hanoi"].eq(True)
     point_map_df["district_match"] = point_map_df["district_match"].eq(True)
-    point_map_df["point_color"] = point_map_df.apply(_point_color_from_validation, axis=1)
-    point_map_df["tooltip_status"] = point_map_df.apply(_tooltip_status_from_validation, axis=1)
-
-    layer_mode = st.radio(
-        "Price layer",
-        options=["Interpolated price surface", "District average", "Points only"],
-        horizontal=True,
+    has_district_polygon = point_map_df["district_osm"].notna()
+    district_mismatch_mask = point_map_df["inside_hanoi"] & has_district_polygon & ~point_map_df["district_match"]
+    outside_mask = ~point_map_df["inside_hanoi"]
+    point_map_df["point_color"] = [[39, 174, 96, 210]] * len(point_map_df)
+    point_map_df.loc[district_mismatch_mask, "point_color"] = pd.Series(
+        [[243, 156, 18, 210]] * int(district_mismatch_mask.sum()),
+        index=point_map_df.index[district_mismatch_mask],
     )
+    point_map_df.loc[outside_mask, "point_color"] = pd.Series(
+        [[231, 76, 60, 210]] * int(outside_mask.sum()),
+        index=point_map_df.index[outside_mask],
+    )
+    point_map_df["tooltip_status"] = "Inside Hanoi and district text matches polygon."
+    point_map_df.loc[district_mismatch_mask, "tooltip_status"] = "District text differs from containing polygon."
+    point_map_df.loc[outside_mask, "tooltip_status"] = "Outside Hanoi boundary."
 
     geojson_layer = pdk.Layer(
         "GeoJsonLayer",
@@ -318,8 +360,14 @@ def render_gis_tab(
         radius_max_pixels=8,
         pickable=True,
     )
-    surface_df = gis_surface_df.copy()
-    if not surface_df.empty:
+    surface_df = pd.DataFrame()
+    if layer_mode == "Interpolated price surface":
+        surface_df = gis_surface_df.copy()
+    if layer_mode == "Interpolated price surface" and not surface_df.empty:
+        surface_df = surface_df[
+            surface_df["cell_polygon"].apply(_is_valid_polygon_ring)
+            & pd.to_numeric(surface_df["predicted_price_per_m2"], errors="coerce").notna()
+        ].copy()
         surface_df["fill_color"] = surface_df["predicted_price_per_m2"].apply(_price_to_color)
     layers = [geojson_layer, district_layer]
     if layer_mode == "Interpolated price surface" and not surface_df.empty:
@@ -374,14 +422,8 @@ def render_gis_tab(
     st.pydeck_chart(deck, use_container_width=True)
 
     inside_count = int(point_map_df["inside_hanoi"].sum())
-    outside_count = int((~point_map_df["inside_hanoi"]).sum())
-    district_mismatch_count = int(
-        (
-            point_map_df["inside_hanoi"]
-            & point_map_df["district_osm"].notna()
-            & ~point_map_df["district_match"]
-        ).sum()
-    )
+    outside_count = int(outside_mask.sum())
+    district_mismatch_count = int(district_mismatch_mask.sum())
     col1, col2, col3 = st.columns(3)
     col1.metric("Geocoded points", f"{len(point_map_df):,}")
     col2.metric("Outside Hanoi boundary", f"{outside_count:,}")
@@ -426,15 +468,7 @@ def main() -> None:
             table_df,
             correlation_df,
             region_stats_df,
-            gis_points_df,
-            gis_surface_df,
-            gis_district_price_df,
-            gis_validation_df,
-            gis_district_validation_df,
-            district_price_geojson,
-            hanoi_boundary_geojson,
-            hanoi_districts_geojson,
-        ) = load_data(active_only=active_only, data_version=data_version)
+        ) = load_core_data(active_only=active_only, data_version=data_version)
     except DashboardDataError as exc:
         st.error("The dashboard could not load the database.")
         st.caption(str(exc))
@@ -461,16 +495,46 @@ def main() -> None:
 
     render_overview(filtered_base, filtered_correlation, filtered_region_stats)
 
-    tab_table, tab_correlation, tab_region, tab_gis = st.tabs(
-        ["Table", "Distance vs Price/m²", "Regional Stats", "GIS Preview"]
+    selected_view = st.radio(
+        "View",
+        ["Table", "Distance vs Price/m²", "Regional Stats", "GIS Preview"],
+        horizontal=True,
     )
-    with tab_table:
+
+    if selected_view == "Table":
         render_table_tab(filtered_table)
-    with tab_correlation:
+    elif selected_view == "Distance vs Price/m²":
         render_correlation_tab(filtered_correlation)
-    with tab_region:
+    elif selected_view == "Regional Stats":
         render_region_stats_tab(filtered_region_stats)
-    with tab_gis:
+    else:
+        layer_mode = st.radio(
+            "Price layer",
+            options=["District average", "Interpolated price surface", "Points only"],
+            horizontal=True,
+        )
+        try:
+            gis_cache_version = get_gis_cache_version()
+            (
+                gis_points_df,
+                gis_validation_df,
+                gis_district_validation_df,
+            ) = load_gis_listing_data(
+                base_df,
+                active_only=active_only,
+                data_version=data_version,
+            )
+            gis_surface_df, gis_district_price_df, district_price_geojson, hanoi_boundary_geojson, hanoi_districts_geojson = load_gis_layers(
+                base_df,
+                active_only=active_only,
+                data_version=data_version,
+                gis_cache_version=gis_cache_version,
+                include_surface=layer_mode == "Interpolated price surface",
+            )
+        except DashboardDataError as exc:
+            st.error("The GIS preview could not load.")
+            st.caption(str(exc))
+            return
         filtered_ids = set(filtered_base["Mã tin"].astype(str))
         filtered_gis_points = gis_points_df[gis_points_df["Mã tin"].astype(str).isin(filtered_ids)].copy()
         filtered_gis_surface = gis_surface_df
@@ -490,6 +554,7 @@ def main() -> None:
             district_price_geojson,
             hanoi_boundary_geojson,
             hanoi_districts_geojson,
+            layer_mode,
         )
 
 
@@ -517,6 +582,31 @@ def _friendly_data_error(exc: Exception) -> str:
     if "password authentication failed" in message or "connection refused" in message:
         return "The PostgreSQL connection failed. Check `DATABASE_URL`, database availability, and credentials."
     return message.splitlines()[0] if message else type(exc).__name__
+
+
+def _needs_district_choropleth_rebuild(geojson_payload: dict[str, Any]) -> bool:
+    features = geojson_payload.get("features")
+    if not features:
+        return True
+    for feature in features:
+        properties = feature.get("properties", {})
+        if isinstance(properties, dict) and "fill_color" in properties:
+            return False
+    return True
+
+
+def _is_valid_polygon_ring(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) >= 4
+        and all(
+            isinstance(point, (list, tuple))
+            and len(point) >= 2
+            and pd.notna(point[0])
+            and pd.notna(point[1])
+            for point in value
+        )
+    )
 
 
 def _rebuild_region_stats_from_filtered_base(

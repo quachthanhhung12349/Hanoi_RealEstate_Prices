@@ -45,14 +45,37 @@ def read_sql_dataframe(query: str, params: dict[str, Any] | None = None) -> pd.D
 
 def get_dashboard_data_version() -> str:
     if is_postgres_backend():
-        ensure_postgres_gis_cache_tables()
         rows = fetch_all_rows(
             """
             SELECT json_build_array(
                 COALESCE((SELECT MAX(last_seen_at)::text FROM listing), ''),
                 COALESCE((SELECT MAX(last_scraped_at)::text FROM listing_current), ''),
                 COALESCE((SELECT MAX(last_geocoded_at)::text FROM address), ''),
-                (SELECT COUNT(*)::text FROM listing),
+                (SELECT COUNT(*)::text FROM listing)
+            )::text AS version
+            """
+        )
+        return str(rows[0]["version"]) if rows else "[]"
+
+    rows = fetch_all_rows(
+        """
+        SELECT json_array(
+            COALESCE((SELECT MAX(last_seen_at) FROM listing), ''),
+            COALESCE((SELECT MAX(last_scraped_at) FROM listing_current), ''),
+            COALESCE((SELECT MAX(last_geocoded_at) FROM address), ''),
+            (SELECT COUNT(*) FROM listing)
+        ) AS version
+        """
+    )
+    return str(rows[0]["version"]) if rows else "[]"
+
+
+def get_gis_cache_version() -> str:
+    if is_postgres_backend():
+        ensure_postgres_gis_cache_tables()
+        rows = fetch_all_rows(
+            """
+            SELECT json_build_array(
                 COALESCE((SELECT MAX(updated_at)::text FROM gis_price_surface), ''),
                 COALESCE((SELECT MAX(updated_at)::text FROM gis_district_price), ''),
                 COALESCE((SELECT MAX(updated_at)::text FROM gis_district_choropleth), ''),
@@ -67,10 +90,6 @@ def get_dashboard_data_version() -> str:
     rows = fetch_all_rows(
         """
         SELECT json_array(
-            COALESCE((SELECT MAX(last_seen_at) FROM listing), ''),
-            COALESCE((SELECT MAX(last_scraped_at) FROM listing_current), ''),
-            COALESCE((SELECT MAX(last_geocoded_at) FROM address), ''),
-            (SELECT COUNT(*) FROM listing),
             '',
             '',
             '',
@@ -107,6 +126,7 @@ def init_db(schema_path: Path | None = None) -> None:
         conn.executescript(schema_file.read_text(encoding="utf-8"))
 
 
+@lru_cache(maxsize=1)
 def ensure_postgres_gis_cache_tables() -> None:
     if not is_postgres_backend():
         return

@@ -31,6 +31,16 @@ from hanoi_real_estate.gis import (
     load_hanoi_boundary_geojson,
     load_hanoi_districts_geojson,
 )
+from hanoi_real_estate.ml.prediction import (
+    PricePredictionInput,
+    candidate_locations_from_training_data,
+    estimate_location_from_training_data,
+    find_model_path,
+    location_click_map,
+    resolve_admin_location_from_point,
+    predict_price,
+)
+from hanoi_real_estate.features.ml_dataset import normalize_legal_status_for_ml
 
 
 class DashboardDataError(RuntimeError):
@@ -293,6 +303,186 @@ def render_region_stats_tab(region_stats_df: pd.DataFrame) -> None:
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 
+def render_price_predictor_tab(base_df: pd.DataFrame) -> None:
+    st.subheader("Price Predictor")
+    model_path = find_model_path()
+    if model_path is None:
+        st.warning("No trained model artifact was found.")
+        st.caption(
+            "Train a model with `PYTHONPATH=src python scripts/run_postgres_ml_test.py` "
+            "or place `xgboost_price_per_m2_pipeline.joblib` in `models/`."
+        )
+        return
+
+    prediction_df = base_df.dropna(subset=["Huyện", "ward", "Latitude", "Longitude"]).copy()
+    if prediction_df.empty:
+        st.info("No geocoded ward/district data is available for location estimation yet.")
+        return
+
+    districts = sorted(prediction_df["Huyện"].dropna().astype(str).unique())
+    left, right = st.columns([0.9, 1.1])
+
+    with left:
+        selected_district = st.session_state.get("predictor_district")
+        if selected_district not in districts:
+            selected_district = districts[0]
+        district = st.selectbox("District", districts, index=districts.index(selected_district))
+
+        ward_options = sorted(
+            prediction_df.loc[prediction_df["Huyện"].astype(str) == district, "ward"]
+            .dropna()
+            .astype(str)
+            .unique()
+        )
+        selected_ward = st.session_state.get("predictor_ward")
+        if selected_ward not in ward_options:
+            selected_ward = ward_options[0] if ward_options else ""
+        ward = st.selectbox("Ward", ward_options, index=ward_options.index(selected_ward)) if ward_options else ""
+
+        estimate = estimate_location_from_training_data(prediction_df, district=district, ward=ward or None)
+        if estimate is None:
+            estimate = (21.0255923, 105.8464321)
+
+        location_mode = st.radio(
+            "Location source",
+            ["Click on map", "Estimate from ward", "Manual coordinates"],
+            horizontal=True,
+        )
+        suggested_points = candidate_locations_from_training_data(prediction_df, district=district, ward=ward)
+        if location_mode == "Click on map":
+            if "predictor_latitude" not in st.session_state:
+                st.session_state["predictor_latitude"] = float(estimate[0])
+            if "predictor_longitude" not in st.session_state:
+                st.session_state["predictor_longitude"] = float(estimate[1])
+            click_result = location_click_map(
+                float(st.session_state["predictor_latitude"]),
+                float(st.session_state["predictor_longitude"]),
+                candidates=suggested_points,
+            )
+            if click_result:
+                st.session_state["predictor_latitude"] = click_result["latitude"]
+                st.session_state["predictor_longitude"] = click_result["longitude"]
+                resolved = resolve_admin_location_from_point(
+                    click_result["latitude"],
+                    click_result["longitude"],
+                    training_df=prediction_df,
+                )
+                if resolved.district and resolved.district in districts:
+                    st.session_state["predictor_district"] = resolved.district
+                if resolved.ward:
+                    ward_scope = prediction_df.loc[
+                        prediction_df["Huyện"].astype(str) == st.session_state.get("predictor_district", resolved.district or district),
+                        "ward",
+                    ].dropna().astype(str).unique().tolist()
+                    if resolved.ward in ward_scope:
+                        st.session_state["predictor_ward"] = resolved.ward
+                st.rerun()
+            latitude = float(st.session_state["predictor_latitude"])
+            longitude = float(st.session_state["predictor_longitude"])
+            resolved = resolve_admin_location_from_point(latitude, longitude, training_df=prediction_df)
+            if resolved.district and resolved.district in districts:
+                district = resolved.district
+                st.session_state["predictor_district"] = district
+            ward_scope = prediction_df.loc[
+                prediction_df["Huyện"].astype(str) == district,
+                "ward",
+            ].dropna().astype(str).unique().tolist()
+            if resolved.ward and resolved.ward in ward_scope:
+                ward = resolved.ward
+                st.session_state["predictor_ward"] = ward
+            st.caption("Click the map to move the selected building point.")
+        elif location_mode == "Manual coordinates":
+            lat_col, lon_col = st.columns(2)
+            latitude = lat_col.number_input("Latitude", value=float(estimate[0]), format="%.7f")
+            longitude = lon_col.number_input("Longitude", value=float(estimate[1]), format="%.7f")
+            resolved = resolve_admin_location_from_point(latitude, longitude, training_df=prediction_df)
+            if resolved.district and resolved.district in districts:
+                district = resolved.district
+                st.session_state["predictor_district"] = district
+            ward_scope = prediction_df.loc[
+                prediction_df["Huyện"].astype(str) == district,
+                "ward",
+            ].dropna().astype(str).unique().tolist()
+            if resolved.ward and resolved.ward in ward_scope:
+                ward = resolved.ward
+                st.session_state["predictor_ward"] = ward
+        else:
+            latitude, longitude = estimate
+            st.caption(f"Estimated point: {latitude:.6f}, {longitude:.6f}")
+            resolved = resolve_admin_location_from_point(latitude, longitude, training_df=prediction_df)
+            if resolved.district and resolved.district in districts:
+                district = resolved.district
+                st.session_state["predictor_district"] = district
+            ward_scope = prediction_df.loc[
+                prediction_df["Huyện"].astype(str) == district,
+                "ward",
+            ].dropna().astype(str).unique().tolist()
+            if resolved.ward and resolved.ward in ward_scope:
+                ward = resolved.ward
+                st.session_state["predictor_ward"] = ward
+
+        if "predictor_district" not in st.session_state:
+            st.session_state["predictor_district"] = district
+        if "predictor_ward" not in st.session_state:
+            st.session_state["predictor_ward"] = ward
+
+        st.caption(
+            f"Resolved location: {district}"
+            + (f" / {ward}" if ward else "")
+            + (f" | source: {resolved.district_source or 'n/a'}"
+               if 'resolved' in locals() and resolved.district_source else "")
+        )
+
+        area_m2 = st.number_input("Building area (m²)", min_value=1.0, max_value=2000.0, value=60.0, step=5.0)
+        floor_col, bedroom_col = st.columns(2)
+        floors = floor_col.number_input("Floors", min_value=1.0, max_value=30.0, value=5.0, step=1.0)
+        bedrooms = bedroom_col.number_input("Bedrooms", min_value=0, max_value=20, value=4, step=1)
+        frontage_col, road_col = st.columns(2)
+        front_length_m = frontage_col.number_input("Frontage (m)", min_value=0.0, max_value=100.0, value=5.0, step=0.5)
+        road_size_m = road_col.number_input("Road width (m)", min_value=0.0, max_value=100.0, value=4.0, step=0.5)
+
+        legal_statuses = ["Sổ đỏ/Sổ hồng", "Chưa sổ"]
+        legal_status = st.selectbox("Legal status", legal_statuses)
+
+    with right:
+        if location_mode != "Click on map":
+            st.pydeck_chart(
+                location_preview_deck_with_candidates(float(latitude), float(longitude), suggested_points),
+                use_container_width=True,
+            )
+        else:
+            st.caption(f"Selected point: {float(latitude):.6f}, {float(longitude):.6f}")
+
+    payload = PricePredictionInput(
+        district=district,
+        ward=ward or "",
+        latitude=float(latitude),
+        longitude=float(longitude),
+        area_m2=float(area_m2),
+        bedrooms=str(bedrooms),
+        front_length_m=float(front_length_m) if front_length_m else None,
+        road_size_m=float(road_size_m) if road_size_m else None,
+        floors=float(floors),
+        legal_status=normalize_legal_status_for_ml(legal_status),
+    )
+
+    try:
+        result = predict_price(payload, model_path=model_path)
+    except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
+        st.error("The predictor could not run.")
+        st.caption(str(exc))
+        return
+
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Predicted price / m²", _format_metric(result.price_per_m2_million_vnd, "triệu"))
+    metric_cols[1].metric("Estimated total price", _format_metric(result.total_price_billion_vnd, "tỷ"))
+    metric_cols[2].metric("Model", model_path.parent.name)
+    st.caption(f"Model artifact: {model_path}")
+
+    with st.expander("Feature values used for prediction"):
+        st.dataframe(result.features, use_container_width=True, hide_index=True)
+
+
 def render_gis_tab(
     gis_points_df: pd.DataFrame,
     gis_surface_df: pd.DataFrame,
@@ -497,11 +687,13 @@ def main() -> None:
 
     selected_view = st.radio(
         "View",
-        ["Table", "Distance vs Price/m²", "Regional Stats", "GIS Preview"],
+        ["Price Predictor", "Table", "Distance vs Price/m²", "Regional Stats", "GIS Preview"],
         horizontal=True,
     )
 
-    if selected_view == "Table":
+    if selected_view == "Price Predictor":
+        render_price_predictor_tab(base_df)
+    elif selected_view == "Table":
         render_table_tab(filtered_table)
     elif selected_view == "Distance vs Price/m²":
         render_correlation_tab(filtered_correlation)
@@ -639,6 +831,18 @@ def _format_metric(value: float, unit: str) -> str:
     if pd.isna(value):
         return "N/A"
     return f"{value:,.2f} {unit}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _top_string_options(df: pd.DataFrame, column: str, *, default: str, limit: int = 12) -> list[str]:
+    if column not in df.columns:
+        return [default]
+    values = df[column].dropna().astype(str)
+    if values.empty:
+        return [default]
+    options = values.value_counts().head(limit).index.tolist()
+    if default not in options:
+        options.insert(0, default)
+    return options
 
 
 def _point_color_from_validation(row: pd.Series) -> list[int]:

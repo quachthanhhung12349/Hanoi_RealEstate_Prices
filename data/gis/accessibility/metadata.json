@@ -1,0 +1,56 @@
+{
+  "updated_at": "2026-06-19T15:33:46.520333+00:00",
+  "place": "Hanoi, Vietnam",
+  "source": "OpenStreetMap via OSMnx/Overpass",
+  "layers": [
+    {
+      "layer": "universities",
+      "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/universities.geojson",
+      "row_count": 217,
+      "source": "cache",
+      "status": "kept_existing"
+    },
+    {
+      "layer": "high_schools",
+      "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/high_schools.geojson",
+      "row_count": 185,
+      "source": "cache",
+      "status": "kept_existing"
+    },
+    {
+      "layer": "hospitals",
+      "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/hospitals.geojson",
+      "row_count": 188,
+      "source": "cache",
+      "status": "kept_existing"
+    },
+    {
+      "layer": "metro_stations",
+      "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/metro_stations.geojson",
+      "row_count": 121,
+      "source": "cache",
+      "status": "kept_existing"
+    },
+    {
+      "layer": "bus_stops",
+      "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/bus_stops.geojson",
+      "row_count": 4979,
+      "source": "cache",
+      "status": "kept_existing"
+    },
+    {
+      "layer": "major_roads",
+      "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/major_roads.geojson",
+      "row_count": 9007,
+      "source": "cache",
+      "status": "kept_existing"
+    },
+    {
+      "layer": "ring_roads",
+      "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/ring_roads.geojson",
+      "row_count": 219,
+      "source": "cache",
+      "status": "kept_existing"
+    }
+  ]
+}

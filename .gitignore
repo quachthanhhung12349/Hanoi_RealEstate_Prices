@@ -17,3 +17,6 @@ data/*.sqlite
 data/*.sqlite3
 data/*.db
 !data/demo.sqlite3
+data/ml/*.csv
+data/ml/model/
+data/ml/postgres_test/

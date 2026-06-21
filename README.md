@@ -2,17 +2,29 @@
 
 Live website: https://hanoirealestateprices-bnsxy55lsaau8jmmrzvay4.streamlit.app/
 
-This repository is currently **Phase 3** of the project.
+This repository is currently **Phase 4** of the project.
 
-## Phase 3
+## Product Roadmap
 
-Phase 3 is focused on:
+This project has been built in stages, with each phase turning it into a more complete product:
 
-- deploying the dashboard as a read-only Streamlit app backed by Supabase/PostgreSQL
-- keeping scraping independent from the GUI so data collection can run on its own schedule
-- running a daily Firecrawl incremental sync into Supabase
-- supporting manual and large backfill scraping locally with Selenium-based scripts
-- precomputing and caching GIS layers in PostgreSQL so the hosted app does not rebuild heavy map layers on every page load
+- Phase 1: basic scraping, modeling, and visualization
+- Phase 2: GIS integration
+- Phase 3: deployment to the open internet with a live Streamlit app
+- Phase 4: ML model implementation
+- Phase 4b: ML fine-tuning and UI/UX refinement
+- Phase 5: LLM/RAG integration
+
+## Phase 4
+
+Phase 4 is focused on:
+
+- building the ML model that turns the cleaned listing dataset into price predictions
+- integrating GIS-aware features so location, accessibility, and district context improve the model
+- keeping the Streamlit predictor usable as a product-style interface, not just a notebook demo
+- comparing the model against simpler baselines so improvements are measurable
+- supporting a click-to-select map flow so the user can place a house directly on the map
+- keeping the prediction stack compatible with Supabase/PostgreSQL and the hosted dashboard
 
 At this stage, the system supports:
 
@@ -24,22 +36,28 @@ At this stage, the system supports:
   - `hrefs.txt` / `hrefs_old.txt`
   - `data_bds.csv`
 - `analytics.py` for notebook-aligned cleaning and derived metrics
+- `features/ml_dataset.py` for district validation, ward cleaning, and ML-ready base data
+- `features/accessibility_features.py` for GIS-enriched distance/count features
+- `ml/price_model.py` for XGBoost training and baseline comparison
+- `ml/prediction.py` for Streamlit prediction inputs and location helpers
 - a Streamlit dashboard for:
   - table view
   - distance to Hanoi center vs price per m2
   - regional house price statistics
   - GIS views backed by precomputed PostgreSQL cache tables
+  - price prediction with district/ward-aware location selection
 
-## What Phase 3 is about
+## Phase 4b
 
-Phase 3 is the **deployment and production data pipeline** stage.
+Phase 4b is the refinement stage before the final LLM layer.
 
-The goal here is to create a working end-to-end system that can:
+The goal here is to turn the current ML prototype into a more polished product by:
 
-1. collect listing data through both local scraping and daily cloud sync
-2. store the source-of-truth dataset in Supabase/PostgreSQL
-3. refresh cached GIS outputs outside the web app
-4. serve a fast, read-only dashboard through Streamlit Community Cloud
+1. improving model quality through feature tuning and validation
+2. tightening district, ward, and map-selection behavior
+3. cleaning up the prediction workflow for faster user input
+4. redesigning the interface so the app feels intentional and commercial
+5. reducing friction in the GIS and data-engineering pipeline
 
 ## Current Project Structure
 
@@ -48,6 +66,8 @@ The goal here is to create a working end-to-end system that can:
 - `src/hanoi_real_estate/repository.py`: PostgreSQL/SQLite repository layer plus GIS cache persistence
 - `src/hanoi_real_estate/analytics.py`: analysis and feature engineering
 - `src/hanoi_real_estate/gis.py`: GIS builders and cached GIS refresh/load helpers
+- `src/hanoi_real_estate/features/`: ML dataset cleaning and GIS accessibility features
+- `src/hanoi_real_estate/ml/`: model training and prediction helpers
 - `src/hanoi_real_estate/dashboard/app.py`: Streamlit dashboard
 - `streamlit_app.py`: Streamlit Community Cloud entrypoint
 - `scripts/`: DB init, import utilities, and daily Firecrawl sync
@@ -102,6 +122,19 @@ The hosted Streamlit app does not scrape data and does not recompute the heavy i
   - Shapely
   - Pyogrio
   - OSMnx
+- Machine learning:
+  - XGBoost
+  - scikit-learn
+  - joblib
+
+## Known Challenges
+
+This project is intentionally difficult in a few places:
+
+- `batdongsan.com.vn` is hard to scrape reliably because Cloudflare protection makes `undetected-chromedriver` necessary
+- scraper output can be noisy and inconsistent, so the dataset needs a non-trivial cleaning layer before ML training
+- GIS integration is useful but still fragile, and some boundary or lookup steps can be bug-prone
+- Hanoi housing data is messy and highly heterogeneous, which makes price prediction much harder than a simple tabular regression problem
 
 ## Useful Commands
 
@@ -174,13 +207,25 @@ For the worker or scheduled sync environment:
 
 ## Planned Next Phases
 
+The roadmap below is intentionally product-oriented rather than notebook-oriented.
+
 ### Phase 4
 
-An ML model to help predict house prices in Hanoi.
+Build the first practical ML pricing model and keep improving feature engineering, validation, and prediction stability.
+
+### Phase 4b
+
+Fine-tune the model and redesign the UI/UX so the product feels polished:
+
+- improve feature selection and model calibration
+- sharpen district and ward handling
+- refine the predictor workflow and map interaction
+- redesign the dashboard layout and visual language
+- make the app feel like a proper web product rather than a data science prototype
 
 ### Phase 5
 
-RAG/LLM integration with both the scraped data and ML model outputs to:
+LLM/RAG integration with both the scraped data and ML model outputs to:
 
 - identify pros and cons of each region
 - suggest suitable house-buying options for:

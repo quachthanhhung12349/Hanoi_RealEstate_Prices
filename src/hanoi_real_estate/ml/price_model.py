@@ -33,6 +33,8 @@ NUMERIC_FEATURES = [
     "high_school_count_1000m",
     "dist_nearest_hospital_m",
     "hospital_count_1000m",
+    "dist_nearest_prison_m",
+    "has_prison_in_500m",
     "dist_nearest_metro_station_m",
     "metro_station_count_1000m",
     "dist_nearest_bus_stop_m",
@@ -40,12 +42,13 @@ NUMERIC_FEATURES = [
     "dist_nearest_major_road_m",
     "major_road_count_1000m",
     "dist_nearest_ring_road_m",
-    "ring_road_count_1000m",
+    "nearest_ring_road_index",
 ]
 
 CATEGORICAL_FEATURES = [
     "Huyện",
     "ward",
+    "Loại BĐS",
     "Số phòng ngủ",
     "Mặt tiền",
     "Đường vào",

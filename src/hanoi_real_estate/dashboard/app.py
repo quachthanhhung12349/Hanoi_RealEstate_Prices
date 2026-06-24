@@ -41,10 +41,25 @@ from hanoi_real_estate.ml.prediction import (
     predict_price,
 )
 from hanoi_real_estate.features.ml_dataset import normalize_legal_status_for_ml
+from hanoi_real_estate.features.property_features import (
+    PROPERTY_TYPE_CHOICES,
+    PROPERTY_TYPE_LAND,
+    property_type_is_land,
+)
 
 
 class DashboardDataError(RuntimeError):
     pass
+
+
+DEFAULT_TAB = "predictor"
+TAB_DEFINITIONS = [
+    ("predictor", "Price Predictor"),
+    ("heatmaps", "Heatmaps"),
+    ("misc", "Misc Statistics"),
+    ("table", "Table"),
+]
+TAB_LABELS = {key: label for key, label in TAB_DEFINITIONS}
 
 
 st.set_page_config(
@@ -145,28 +160,26 @@ def load_gis_listing_data(
     return gis_points_df, gis_validation_df, gis_district_validation_df
 
 
-def apply_filters(
+def apply_table_filters(
     base_df: pd.DataFrame,
     table_df: pd.DataFrame,
-    correlation_df: pd.DataFrame,
-    region_stats_df: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     st.sidebar.header("Filters")
 
     districts = sorted(
         value for value in base_df.get("Huyện", pd.Series(dtype="object")).dropna().astype(str).unique() if value
     )
-    selected_districts = st.sidebar.multiselect("Huyện", districts)
+    selected_districts = st.sidebar.multiselect("Huyện", districts, key="table_filter_districts")
 
     legal_statuses = sorted(
         value for value in base_df.get("Pháp lý", pd.Series(dtype="object")).dropna().astype(str).unique() if value
     )
-    selected_legal = st.sidebar.multiselect("Pháp lý", legal_statuses)
+    selected_legal = st.sidebar.multiselect("Pháp lý", legal_statuses, key="table_filter_legal")
 
     ad_types = sorted(
         value for value in base_df.get("Loại tin", pd.Series(dtype="object")).dropna().astype(str).unique() if value
     )
-    selected_ad_types = st.sidebar.multiselect("Loại tin", ad_types)
+    selected_ad_types = st.sidebar.multiselect("Loại tin", ad_types, key="table_filter_ad_type")
 
     min_price, max_price = _range_from_series(base_df.get("Mức giá trị", pd.Series(dtype="float64")))
     selected_price = st.sidebar.slider(
@@ -175,6 +188,7 @@ def apply_filters(
         max_value=max_price,
         value=(min_price, max_price),
         step=0.5,
+        key="table_filter_price",
     )
 
     min_area, max_area = _range_from_series(base_df.get("Diện tích trị", pd.Series(dtype="float64")))
@@ -184,6 +198,7 @@ def apply_filters(
         max_value=max_area,
         value=(min_area, max_area),
         step=5.0,
+        key="table_filter_area",
     )
 
     filtered_base = base_df.copy()
@@ -204,12 +219,7 @@ def apply_filters(
     listing_ids = set(filtered_base["Mã tin"].astype(str))
 
     filtered_table = table_df[table_df["Mã tin"].astype(str).isin(listing_ids)].copy()
-    filtered_correlation = correlation_df[
-        correlation_df["Mã tin"].astype(str).isin(listing_ids)
-    ].copy()
-    filtered_region_stats = _rebuild_region_stats_from_filtered_base(filtered_base, region_stats_df)
-
-    return filtered_base, filtered_table, filtered_correlation, filtered_region_stats
+    return filtered_base, filtered_table
 
 
 def render_overview(base_df: pd.DataFrame, correlation_df: pd.DataFrame, region_stats_df: pd.DataFrame) -> None:
@@ -230,9 +240,48 @@ def render_overview(base_df: pd.DataFrame, correlation_df: pd.DataFrame, region_
         st.caption(f"Regions with statistics: {len(region_stats_df):,}")
 
 
-def render_table_tab(table_df: pd.DataFrame) -> None:
-    st.subheader("Listing Table")
-    st.dataframe(table_df, use_container_width=True, hide_index=True)
+def render_table_stats(base_df: pd.DataFrame) -> None:
+    stats_df = base_df.copy()
+    district_series = stats_df.get("Huyện", pd.Series(dtype="object"))
+    valid_district_mask = _valid_district_mask(district_series)
+    district_count = int(district_series[valid_district_mask].astype(str).nunique()) if not stats_df.empty else 0
+    listing_count = int(valid_district_mask.sum()) if not stats_df.empty else 0
+
+    price_series = pd.to_numeric(stats_df.get("Mức giá trị", pd.Series(dtype="float64")), errors="coerce")
+    price_m2_series = pd.to_numeric(stats_df.get("Giá/m² trị", pd.Series(dtype="float64")), errors="coerce")
+
+    metrics = [
+        ("Listings", f"{listing_count:,}"),
+        ("Districts", f"{district_count:,}"),
+        ("Avg price", _format_metric(price_series[valid_district_mask].mean(), "tỷ")),
+        ("Avg price / m²", _format_metric(price_m2_series[valid_district_mask].mean(), "triệu")),
+        ("Min price", _format_metric(price_series[valid_district_mask].min(), "tỷ")),
+        ("Max price", _format_metric(price_series[valid_district_mask].max(), "tỷ")),
+        ("Min price / m²", _format_metric(price_m2_series[valid_district_mask].min(), "triệu")),
+        ("Max price / m²", _format_metric(price_m2_series[valid_district_mask].max(), "triệu")),
+    ]
+
+    rows = [metrics[:4], metrics[4:]]
+    for row in rows:
+        cols = st.columns(4)
+        for col, (label, value) in zip(cols, row):
+            col.metric(label, value)
+    st.caption("These metrics are calculated from the current filtered set and only count listings with valid district values.")
+
+
+def render_table_tab(filtered_base: pd.DataFrame, filtered_table: pd.DataFrame) -> None:
+    st.subheader("Table")
+    st.caption("Use the sidebar filters to narrow the dataset. The link column opens the live Batdongsan listing.")
+    render_table_stats(filtered_base)
+    st.link_button("Open Batdongsan", "https://batdongsan.com.vn")
+    st.dataframe(
+        filtered_table,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Link": st.column_config.LinkColumn("Link", display_text="Open listing"),
+        },
+    )
 
 
 def render_correlation_tab(correlation_df: pd.DataFrame) -> None:
@@ -301,6 +350,45 @@ def render_region_stats_tab(region_stats_df: pd.DataFrame) -> None:
         }
     )
     st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+
+def render_misc_statistics_tab(base_df: pd.DataFrame, correlation_df: pd.DataFrame, region_stats_df: pd.DataFrame) -> None:
+    st.subheader("Misc Statistics")
+    render_misc_summary_metrics(base_df)
+    st.caption("This tab combines the distance-vs-price view, district-level statistics, and overall dataset summaries.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        render_correlation_tab(correlation_df)
+    with col2:
+        render_region_stats_tab(region_stats_df)
+
+
+def render_misc_summary_metrics(base_df: pd.DataFrame) -> None:
+    cleaned_df = base_df.copy()
+    district_series = cleaned_df.get("Huyện", pd.Series(dtype="object"))
+    valid_district_mask = _valid_district_mask(district_series)
+    valid_df = cleaned_df.loc[valid_district_mask].copy()
+
+    price_series = pd.to_numeric(valid_df.get("Mức giá trị", pd.Series(dtype="float64")), errors="coerce")
+    price_m2_series = pd.to_numeric(valid_df.get("Giá/m² trị", pd.Series(dtype="float64")), errors="coerce")
+
+    metrics = [
+        ("Cleaned listings", f"{len(valid_df):,}"),
+        ("Districts", f"{valid_df['Huyện'].astype(str).nunique() if not valid_df.empty else 0:,}"),
+        ("Avg price", _format_metric(price_series.mean(), "tỷ")),
+        ("Avg price / m²", _format_metric(price_m2_series.mean(), "triệu")),
+        ("Min price", _format_metric(price_series.min(), "tỷ")),
+        ("Max price", _format_metric(price_series.max(), "tỷ")),
+        ("Min price / m²", _format_metric(price_m2_series.min(), "triệu")),
+        ("Max price / m²", _format_metric(price_m2_series.max(), "triệu")),
+    ]
+
+    for row in (metrics[:4], metrics[4:]):
+        cols = st.columns(4)
+        for col, (label, value) in zip(cols, row):
+            col.metric(label, value)
+    st.caption("Counts only include cleaned listings with a valid district value.")
 
 
 def render_price_predictor_tab(base_df: pd.DataFrame) -> None:
@@ -433,16 +521,34 @@ def render_price_predictor_tab(base_df: pd.DataFrame) -> None:
                if 'resolved' in locals() and resolved.district_source else "")
         )
 
+        property_type = st.selectbox("Property type", PROPERTY_TYPE_CHOICES[:3], index=1)
+        is_land_listing = property_type_is_land(property_type)
         area_m2 = st.number_input("Building area (m²)", min_value=1.0, max_value=2000.0, value=60.0, step=5.0)
         floor_col, bedroom_col = st.columns(2)
-        floors = floor_col.number_input("Floors", min_value=1.0, max_value=30.0, value=5.0, step=1.0)
-        bedrooms = bedroom_col.number_input("Bedrooms", min_value=0, max_value=20, value=4, step=1)
+        floors = floor_col.number_input(
+            "Floors",
+            min_value=1.0,
+            max_value=30.0,
+            value=5.0,
+            step=1.0,
+            disabled=is_land_listing,
+        )
+        bedrooms = bedroom_col.number_input(
+            "Bedrooms",
+            min_value=0,
+            max_value=20,
+            value=4,
+            step=1,
+            disabled=is_land_listing,
+        )
         frontage_col, road_col = st.columns(2)
         front_length_m = frontage_col.number_input("Frontage (m)", min_value=0.0, max_value=100.0, value=5.0, step=0.5)
         road_size_m = road_col.number_input("Road width (m)", min_value=0.0, max_value=100.0, value=4.0, step=0.5)
 
         legal_statuses = ["Sổ đỏ/Sổ hồng", "Chưa sổ"]
         legal_status = st.selectbox("Legal status", legal_statuses)
+        if is_land_listing:
+            st.caption("House-only fields are disabled for `Đất` listings.")
 
     with right:
         if location_mode != "Click on map":
@@ -454,30 +560,84 @@ def render_price_predictor_tab(base_df: pd.DataFrame) -> None:
             st.caption(f"Selected point: {float(latitude):.6f}, {float(longitude):.6f}")
 
     payload = PricePredictionInput(
+        property_type=property_type,
         district=district,
         ward=ward or "",
         latitude=float(latitude),
         longitude=float(longitude),
         area_m2=float(area_m2),
-        bedrooms=str(bedrooms),
+        bedrooms=None if is_land_listing else str(bedrooms),
         front_length_m=float(front_length_m) if front_length_m else None,
         road_size_m=float(road_size_m) if road_size_m else None,
-        floors=float(floors),
+        floors=None if is_land_listing else float(floors),
         legal_status=normalize_legal_status_for_ml(legal_status),
     )
 
     try:
-        result = predict_price(payload, model_path=model_path)
+        result = predict_price(payload, model_path=model_path, training_df=prediction_df)
     except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
         st.error("The predictor could not run.")
         st.caption(str(exc))
         return
 
-    metric_cols = st.columns(3)
-    metric_cols[0].metric("Predicted price / m²", _format_metric(result.price_per_m2_million_vnd, "triệu"))
-    metric_cols[1].metric("Estimated total price", _format_metric(result.total_price_billion_vnd, "tỷ"))
-    metric_cols[2].metric("Model", model_path.parent.name)
+    st.caption("Two prediction methods are shown below so buyers can compare a feature-rich ML estimate with a nearby-location interpolation estimate.")
+
+    xgb_col, idw_col = st.columns(2)
+    with xgb_col:
+        st.markdown("**XGBoost Predictor**")
+        st.metric("Predicted price / m²", _format_metric(result.xgboost_estimate.price_per_m2_million_vnd, "triệu"))
+        st.metric("Estimated total price", _format_metric(result.xgboost_estimate.total_price_billion_vnd, "tỷ"))
+        st.caption(result.xgboost_estimate.summary)
+
+    with idw_col:
+        st.markdown("**IDW Predictor**")
+        if result.idw_estimate is None:
+            st.info("No suitable nearby listing set was available for IDW interpolation.")
+        else:
+            st.metric("Predicted price / m²", _format_metric(result.idw_estimate.price_per_m2_million_vnd, "triệu"))
+            st.metric("Estimated total price", _format_metric(result.idw_estimate.total_price_billion_vnd, "tỷ"))
+            st.caption(result.idw_estimate.summary)
+
+    model_col, scope_col = st.columns(2)
+    model_col.metric("XGBoost artifact", model_path.parent.name)
+    if result.idw_estimate is not None:
+        idw_scope = result.idw_estimate.details.get("scope") or "all comparable listings"
+        scope_col.metric("IDW comparable scope", str(idw_scope))
     st.caption(f"Model artifact: {model_path}")
+
+    with st.expander("How the two predictors differ"):
+        st.markdown(
+            """
+            **XGBoost**
+
+            - Learns from many past listings at once
+            - Uses property details like area, type, frontage, road width, and legal status
+            - Also uses nearby amenity and transport features
+            - Better when property characteristics matter, not just location
+
+            **IDW Interpolation**
+
+            - Looks at nearby listings and averages them with stronger weight on the closest ones
+            - Very location-driven and easier to explain
+            - Good as a local market reality check
+            - Can be less stable if nearby comparable listings are sparse or noisy
+            """
+        )
+
+    if result.idw_estimate is not None:
+        with st.expander("IDW interpolation details"):
+            idw_details_df = pd.DataFrame(
+                [
+                    {"Field": "Comparable scope", "Value": result.idw_estimate.details.get("scope")},
+                    {"Field": "Comparable rows", "Value": result.idw_estimate.details.get("comparable_rows")},
+                    {"Field": "Neighbors used", "Value": result.idw_estimate.details.get("neighbors_used")},
+                    {"Field": "Nearest listing distance (m)", "Value": result.idw_estimate.details.get("nearest_distance_m")},
+                    {"Field": "Weight power", "Value": result.idw_estimate.details.get("power")},
+                    {"Field": "Max radius (m)", "Value": result.idw_estimate.details.get("max_distance_m")},
+                    {"Field": "Fallback median used", "Value": result.idw_estimate.details.get("fallback_used")},
+                ]
+            )
+            st.dataframe(idw_details_df, use_container_width=True, hide_index=True)
 
     with st.expander("Feature values used for prediction"):
         st.dataframe(result.features, use_container_width=True, hide_index=True)
@@ -647,10 +807,145 @@ def render_gis_tab(
         st.dataframe(mismatch_df, use_container_width=True, hide_index=True)
 
 
-def main() -> None:
-    st.title("Hanoi Real Estate Dashboard")
+def render_heatmaps_tab(
+    base_df: pd.DataFrame,
+    active_only: bool,
+    data_version: str,
+) -> None:
+    st.subheader("Heatmaps")
+    layer_mode = st.radio(
+        "Heatmap layer",
+        options=["District average", "Interpolated price surface"],
+        horizontal=True,
+    )
+    try:
+        gis_cache_version = get_gis_cache_version()
+        (
+            gis_points_df,
+            gis_validation_df,
+            gis_district_validation_df,
+        ) = load_gis_listing_data(
+            base_df,
+            active_only=active_only,
+            data_version=data_version,
+        )
+        (
+            gis_surface_df,
+            gis_district_price_df,
+            district_price_geojson,
+            hanoi_boundary_geojson,
+            hanoi_districts_geojson,
+        ) = load_gis_layers(
+            base_df,
+            active_only=active_only,
+            data_version=data_version,
+            gis_cache_version=gis_cache_version,
+            include_surface=layer_mode == "Interpolated price surface",
+        )
+    except DashboardDataError as exc:
+        st.error("The heatmap view could not load.")
+        st.caption(str(exc))
+        return
 
-    active_only = st.sidebar.checkbox("Only active listings", value=True)
+    render_gis_tab(
+        gis_points_df,
+        gis_surface_df,
+        gis_district_price_df,
+        gis_validation_df,
+        gis_district_validation_df,
+        district_price_geojson,
+        hanoi_boundary_geojson,
+        hanoi_districts_geojson,
+        layer_mode,
+    )
+
+
+def render_top_nav(active_tab: str, show_sidebar: bool) -> None:
+    sidebar_css = "" if show_sidebar else "[data-testid='stSidebar'] { display: none; }"
+    st.markdown(
+        f"""
+        <style>
+        {sidebar_css}
+        [data-testid="stSidebarNav"] {{
+            display: none;
+        }}
+        .block-container {{
+            padding-top: 3.25rem;
+            padding-bottom: 2rem;
+        }}
+        div[data-testid="stHorizontalBlock"]:has(.topbar-brand) {{
+            align-items: center;
+            background: var(--secondary-background-color);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.55rem 0.7rem;
+            margin-bottom: 1rem;
+        }}
+        .topbar-brand {{
+            line-height: 1.1;
+            margin: 0;
+        }}
+        .topbar-brand-title {{
+            color: var(--primary-color);
+            font-size: 1rem;
+            font-weight: 800;
+            white-space: nowrap;
+        }}
+        .topbar-brand-subtitle {{
+            color: color-mix(in srgb, var(--text-color) 62%, transparent);
+            font-size: 0.78rem;
+            margin-top: 0.12rem;
+            white-space: nowrap;
+        }}
+        @media (max-width: 760px) {{
+            .topbar-brand-title,
+            .topbar-brand-subtitle {{
+                white-space: normal;
+            }}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    nav_cols = st.columns([2.4, 1, 1, 1, 1], vertical_alignment="center")
+    with nav_cols[0]:
+        st.markdown(
+            """
+            <div class="topbar-brand">
+                <div class="topbar-brand-title">Hanoi Real Estate Prices</div>
+                <div class="topbar-brand-subtitle">Predict, map, compare, browse</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    for column, (tab_key, tab_label) in zip(nav_cols[1:], TAB_DEFINITIONS):
+        with column:
+            if st.button(
+                tab_label,
+                key=f"nav_{tab_key}",
+                type="primary" if tab_key == active_tab else "secondary",
+                use_container_width=True,
+            ):
+                if tab_key != active_tab:
+                    st.query_params["tab"] = tab_key
+                    st.rerun()
+
+
+def main() -> None:
+    selected_tab = st.query_params.get("tab", DEFAULT_TAB)
+    if isinstance(selected_tab, list):
+        selected_tab = selected_tab[0] if selected_tab else DEFAULT_TAB
+    if selected_tab not in TAB_LABELS:
+        selected_tab = DEFAULT_TAB
+
+    show_sidebar = selected_tab == "table"
+    render_top_nav(selected_tab, show_sidebar=show_sidebar)
+
+    active_only = True
+    if show_sidebar:
+        active_only = st.sidebar.checkbox("Only active listings", value=True, key="table_active_only")
+
     try:
         data_version = get_dashboard_data_version()
         (
@@ -676,78 +971,15 @@ def main() -> None:
         )
         return
 
-    filtered_base, filtered_table, filtered_correlation, filtered_region_stats = apply_filters(
-        base_df,
-        table_df,
-        correlation_df,
-        region_stats_df,
-    )
-
-    render_overview(filtered_base, filtered_correlation, filtered_region_stats)
-
-    selected_view = st.radio(
-        "View",
-        ["Price Predictor", "Table", "Distance vs Price/m²", "Regional Stats", "GIS Preview"],
-        horizontal=True,
-    )
-
-    if selected_view == "Price Predictor":
+    if selected_tab == "predictor":
         render_price_predictor_tab(base_df)
-    elif selected_view == "Table":
-        render_table_tab(filtered_table)
-    elif selected_view == "Distance vs Price/m²":
-        render_correlation_tab(filtered_correlation)
-    elif selected_view == "Regional Stats":
-        render_region_stats_tab(filtered_region_stats)
+    elif selected_tab == "heatmaps":
+        render_heatmaps_tab(base_df, active_only=active_only, data_version=data_version)
+    elif selected_tab == "misc":
+        render_misc_statistics_tab(base_df, correlation_df, region_stats_df)
     else:
-        layer_mode = st.radio(
-            "Price layer",
-            options=["District average", "Interpolated price surface", "Points only"],
-            horizontal=True,
-        )
-        try:
-            gis_cache_version = get_gis_cache_version()
-            (
-                gis_points_df,
-                gis_validation_df,
-                gis_district_validation_df,
-            ) = load_gis_listing_data(
-                base_df,
-                active_only=active_only,
-                data_version=data_version,
-            )
-            gis_surface_df, gis_district_price_df, district_price_geojson, hanoi_boundary_geojson, hanoi_districts_geojson = load_gis_layers(
-                base_df,
-                active_only=active_only,
-                data_version=data_version,
-                gis_cache_version=gis_cache_version,
-                include_surface=layer_mode == "Interpolated price surface",
-            )
-        except DashboardDataError as exc:
-            st.error("The GIS preview could not load.")
-            st.caption(str(exc))
-            return
-        filtered_ids = set(filtered_base["Mã tin"].astype(str))
-        filtered_gis_points = gis_points_df[gis_points_df["Mã tin"].astype(str).isin(filtered_ids)].copy()
-        filtered_gis_surface = gis_surface_df
-        filtered_gis_district_price = gis_district_price_df
-        filtered_gis_validation = gis_validation_df[
-            gis_validation_df["Mã tin"].astype(str).isin(filtered_ids)
-        ].copy()
-        filtered_gis_district_validation = gis_district_validation_df[
-            gis_district_validation_df["Mã tin"].astype(str).isin(filtered_ids)
-        ].copy()
-        render_gis_tab(
-            filtered_gis_points,
-            filtered_gis_surface,
-            filtered_gis_district_price,
-            filtered_gis_validation,
-            filtered_gis_district_validation,
-            district_price_geojson,
-            hanoi_boundary_geojson,
-            hanoi_districts_geojson,
-            layer_mode,
-        )
+        filtered_base, filtered_table = apply_table_filters(base_df, table_df)
+        render_table_tab(filtered_base, filtered_table)
 
 
 def _range_from_series(series: pd.Series) -> tuple[float, float]:
@@ -825,6 +1057,11 @@ def _rebuild_region_stats_from_filtered_base(
         .reset_index(drop=True)
     )
     return grouped
+
+
+def _valid_district_mask(series: pd.Series) -> pd.Series:
+    text = series.astype("string").str.strip()
+    return text.notna() & text.ne("") & ~text.str.lower().isin(["nan", "none"])
 
 
 def _format_metric(value: float, unit: str) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 import geopandas as gpd
 import pandas as pd
@@ -19,10 +20,14 @@ FEATURE_PREFIX_BY_LAYER = {
     "universities": "university",
     "high_schools": "high_school",
     "hospitals": "hospital",
+    "prisons": "prison",
     "metro_stations": "metro_station",
     "bus_stops": "bus_stop",
     "major_roads": "major_road",
     "ring_roads": "ring_road",
+}
+COUNT_RADIUS_BY_LAYER = {
+    "prisons": 500.0,
 }
 
 
@@ -62,11 +67,17 @@ def build_accessibility_feature_dataframe(
         pois = load_accessibility_layer(layer)
         prefix = FEATURE_PREFIX_BY_LAYER[layer]
         distance_column = f"dist_nearest_{prefix}_m"
-        count_column = f"{prefix}_count_{int(walk_radius_m)}m"
+        radius_m = COUNT_RADIUS_BY_LAYER.get(layer, walk_radius_m)
+        count_column = f"{prefix}_count_{int(radius_m)}m"
 
         if pois.empty or listings_gdf.empty:
             working[distance_column] = pd.NA
-            working[count_column] = 0
+            if layer == "prisons":
+                working["has_prison_in_500m"] = 0
+            elif layer != "ring_roads":
+                working[count_column] = 0
+            if layer == "ring_roads":
+                working["nearest_ring_road_index"] = pd.NA
             summary_rows.append(
                 AccessibilityFeatureSummary(
                     layer=layer,
@@ -80,9 +91,14 @@ def build_accessibility_feature_dataframe(
             continue
 
         distances = _nearest_distances_m(listings_gdf, pois)
-        counts = _counts_within_radius(listings_gdf, pois, radius_m=walk_radius_m)
+        counts = _counts_within_radius(listings_gdf, pois, radius_m=radius_m)
         working[distance_column] = distances
-        working[count_column] = counts
+        if layer == "prisons":
+            working["has_prison_in_500m"] = (pd.Series(counts, index=listings_gdf.index) > 0).astype(int)
+        elif layer != "ring_roads":
+            working[count_column] = counts
+        if layer == "ring_roads":
+            working["nearest_ring_road_index"] = _nearest_ring_road_indices(listings_gdf, pois)
 
         distance_series = pd.Series(distances)
         count_series = pd.Series(counts)
@@ -176,6 +192,51 @@ def _counts_within_radius(
     )
     counts = joined.loc[joined["index_right"].notna()].groupby(level=0)["index_right"].nunique()
     return counts.reindex(listings_gdf.index, fill_value=0).astype(int)
+
+
+def _nearest_ring_road_indices(
+    listings_gdf: gpd.GeoDataFrame,
+    pois: gpd.GeoDataFrame,
+) -> pd.Series:
+    if pois.empty or listings_gdf.empty:
+        return pd.Series(pd.NA, index=listings_gdf.index, dtype="object")
+
+    metric_listings = listings_gdf.to_crs(METRIC_CRS)
+    metric_pois = pois.to_crs(METRIC_CRS).copy()
+    metric_pois["_ring_road_index"] = metric_pois.apply(_extract_ring_road_index_from_row, axis=1)
+    joined = gpd.sjoin_nearest(
+        metric_listings[["geometry"]],
+        metric_pois[["_ring_road_index", "geometry"]],
+        how="left",
+        distance_col="_distance_m",
+    )
+    nearest = joined.groupby(joined.index).first()["_ring_road_index"]
+    return nearest.reindex(listings_gdf.index)
+
+
+def _extract_ring_road_index_from_row(row: pd.Series) -> float | pd.NA:
+    text_parts = [
+        _stringify_value(row.get("name")),
+        _stringify_value(row.get("name:vi")),
+        _stringify_value(row.get("alt_name")),
+        _stringify_value(row.get("official_name")),
+        _stringify_value(row.get("ref")),
+    ]
+    text = " ".join(part for part in text_parts if part).casefold()
+    match = re.search(r"vành\s*đai\s*([235](?:\.[5])?|4|5)|vanh\s*dai\s*([235](?:\.[5])?|4|5)|rr\s*([235](?:\.[5])?|4|5)", text)
+    if not match:
+        return pd.NA
+    value = next(group for group in match.groups() if group)
+    try:
+        return float(value)
+    except ValueError:
+        return pd.NA
+
+
+def _stringify_value(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value)
 
 
 def _ensure_listing_coordinate_columns(df: pd.DataFrame) -> None:

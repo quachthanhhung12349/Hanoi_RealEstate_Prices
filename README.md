@@ -74,6 +74,144 @@ The goal here is to turn the current ML prototype into a more polished product b
 - `sql/`: PostgreSQL schema and GIS cache tables
 - `data/`: local SQLite database and local artifacts when working outside Supabase
 
+## Full Architecture
+
+This is the project at a glance, split into smaller diagrams so each part stays readable.
+
+### 1) System Overview
+
+```mermaid
+flowchart LR
+    BDS[batdongsan.com.vn]
+    FIRE[Firecrawl API]
+    OSM[OpenStreetMap / Overpass]
+    LEGACY[Legacy hrefs.txt / data_bds.csv]
+    SQLSCHEMA[sql/schema.sql<br/>sql/schema_postgres.sql]
+    SCRIPTS[Scripts]
+    CORE[Core package]
+    STORAGE[(SQLite / PostgreSQL / GIS caches / CSVs / model file)]
+    DASH[Streamlit dashboard]
+
+    BDS --> SCRIPTS
+    FIRE --> SCRIPTS
+    OSM --> SCRIPTS
+    LEGACY --> SCRIPTS
+    SQLSCHEMA --> SCRIPTS
+    SCRIPTS --> CORE
+    CORE --> STORAGE
+    STORAGE --> DASH
+```
+
+### 2) Scraping And Ingestion
+
+```mermaid
+flowchart LR
+    BDS[batdongsan.com.vn]
+    FIRE[Firecrawl API]
+    DISCOVER[scrapers/discover_listings.py]
+    DETAILS[scrapers/scrape_listing_details.py]
+    DAILY[scripts/daily_firecrawl_sync.py]
+    PARSE[src/hanoi_real_estate/parsers.py]
+    FIRECRAWL[src/hanoi_real_estate/firecrawl.py]
+    REPO[src/hanoi_real_estate/repository.py]
+    DB[src/hanoi_real_estate/db.py]
+    SQLITE[(SQLite)]
+    POSTGRES[(PostgreSQL / Supabase)]
+
+    BDS --> DISCOVER
+    BDS --> DETAILS
+    FIRE --> DAILY
+    DISCOVER --> PARSE
+    DETAILS --> PARSE
+    DAILY --> FIRECRAWL
+    DAILY --> PARSE
+    PARSE --> REPO
+    REPO --> DB
+    DB --> SQLITE
+    DB --> POSTGRES
+    REPO --> SQLITE
+    REPO --> POSTGRES
+```
+
+### 3) GIS And Feature Engineering
+
+```mermaid
+flowchart LR
+    OSM[OpenStreetMap / Overpass]
+    DISTRICT[scripts/build_hanoi_district_cache.py]
+    ACCESS[scripts/build_accessibility_gis_cache.py]
+    GIS[src/hanoi_real_estate/gis.py]
+    ACCSRC[src/hanoi_real_estate/features/accessibility_sources.py]
+    ACCFEAT[src/hanoi_real_estate/features/accessibility_features.py]
+    MLDATA[src/hanoi_real_estate/features/ml_dataset.py]
+    DASHDATA[src/hanoi_real_estate/analytics.py]
+    GISCACHE[(GIS cache tables / GeoJSON caches)]
+    CSVS[(ML base CSVs / accessibility CSVs)]
+
+    OSM --> DISTRICT
+    OSM --> ACCESS
+    DISTRICT --> GIS
+    ACCESS --> ACCSRC
+    GIS --> GISCACHE
+    ACCSRC --> GISCACHE
+    DASHDATA --> MLDATA
+    MLDATA --> CSVS
+    ACCFEAT --> CSVS
+```
+
+### 4) Model Training And Prediction
+
+```mermaid
+flowchart LR
+    BASE[scripts/build_ml_training_dataset.py]
+    MLACC[scripts/build_ml_accessibility_features.py]
+    TRAIN[scripts/train_xgboost_price_model.py]
+    EXPORT[scripts/export_streamlit_model.py]
+    MODEL[src/hanoi_real_estate/ml/price_model.py]
+    PRED[src/hanoi_real_estate/ml/prediction.py]
+    MODELFILE[(models/xgboost_price_per_m2_pipeline.joblib)]
+    CSVS[(ML CSV artifacts)]
+    DASH[Streamlit predictor]
+
+    BASE --> CSVS
+    MLACC --> CSVS
+    CSVS --> TRAIN
+    TRAIN --> MODEL
+    MODEL --> MODELFILE
+    EXPORT --> MODELFILE
+    MODELFILE --> PRED
+    PRED --> DASH
+```
+
+### 5) Dashboard And Serving
+
+```mermaid
+flowchart LR
+    STAPP[streamlit_app.py]
+    RUN[scripts/run_dashboard.sh]
+    DASHAPP[src/hanoi_real_estate/dashboard/app.py]
+    ANALYTICS[src/hanoi_real_estate/analytics.py]
+    GIS[src/hanoi_real_estate/gis.py]
+    PRED[src/hanoi_real_estate/ml/prediction.py]
+    DB[src/hanoi_real_estate/db.py]
+    STORAGE[(SQLite / PostgreSQL / GIS caches / model file)]
+
+    RUN --> STAPP
+    STAPP --> DASHAPP
+    DASHAPP --> ANALYTICS
+    DASHAPP --> GIS
+    DASHAPP --> PRED
+    DASHAPP --> DB
+    STORAGE --> DASHAPP
+```
+
+### How To Read It
+
+- The scraping flow starts with `discover_listings.py`, `scrape_listing_details.py`, and `daily_firecrawl_sync.py`.
+- The GIS flow is split into district caching, accessibility caching, and feature generation.
+- The ML flow is split into base dataset creation, accessibility enrichment, training, and prediction.
+- The dashboard flow shows how the Streamlit app reads from stored data and model artifacts.
+
 ## MVP Behavior
 
 ### Discovery

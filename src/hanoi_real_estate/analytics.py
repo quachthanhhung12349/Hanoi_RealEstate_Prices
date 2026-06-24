@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from .db import read_sql_dataframe
+from .features.property_features import add_property_type_features
 
 
 THAP_RUA_LAT = 21.0255923
@@ -23,6 +24,7 @@ def load_dashboard_dataframe(active_only: bool = True) -> pd.DataFrame:
             l.is_active,
             l.first_seen_at,
             l.last_seen_at,
+            l.listing_type,
             lc.title,
             lc.price_raw,
             lc.price_value_vnd,
@@ -136,6 +138,7 @@ def prepare_dashboard_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         THAP_RUA_LAT,
         THAP_RUA_LON,
     )
+    working = add_property_type_features(working)
 
     return working
 
@@ -156,6 +159,7 @@ def build_table_dataframe(
         "Địa chỉ 2",
         "Mức giá",
         "Giá/m²",
+        "Loại BĐS",
         "Số phòng ngủ",
         "Huyện",
         "Diện tích",

@@ -8,6 +8,7 @@ from typing import Any
 
 import geopandas as gpd
 import joblib
+import numpy as np
 import pandas as pd
 import folium
 import requests
@@ -23,6 +24,10 @@ from hanoi_real_estate.features.accessibility_features import (
 )
 from hanoi_real_estate.features.accessibility_sources import ACCESSIBILITY_LAYER_FILES
 from hanoi_real_estate.features.ml_dataset import normalize_legal_status_for_ml
+from hanoi_real_estate.features.property_features import (
+    infer_property_type,
+    property_type_is_land,
+)
 from hanoi_real_estate.parsers import clean_text
 from hanoi_real_estate.ml.price_model import MODEL_FEATURES
 
@@ -38,6 +43,7 @@ NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse"
 
 @dataclass(frozen=True)
 class PricePredictionInput:
+    property_type: str
     district: str
     ward: str
     latitude: float
@@ -52,11 +58,28 @@ class PricePredictionInput:
 
 
 @dataclass(frozen=True)
-class PricePredictionResult:
+class PredictorEstimate:
     price_per_m2_million_vnd: float
     total_price_billion_vnd: float
+    method_name: str
+    summary: str
+    details: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PricePredictionResult:
+    xgboost_estimate: PredictorEstimate
+    idw_estimate: PredictorEstimate | None
     features: pd.DataFrame
     model_path: Path
+
+    @property
+    def price_per_m2_million_vnd(self) -> float:
+        return self.xgboost_estimate.price_per_m2_million_vnd
+
+    @property
+    def total_price_billion_vnd(self) -> float:
+        return self.xgboost_estimate.total_price_billion_vnd
 
 
 @dataclass(frozen=True)
@@ -99,11 +122,12 @@ def build_prediction_features(payload: PricePredictionInput) -> pd.DataFrame:
         "dist_to_HN_center": haversine_km(payload.latitude, payload.longitude, THAP_RUA_LAT, THAP_RUA_LON),
         "Huyện": payload.district,
         "ward": payload.ward,
-        "Số phòng ngủ": _format_count_label(payload.bedrooms, "phòng"),
+        "Loại BĐS": infer_property_type(payload.property_type),
+        "Số phòng ngủ": None if property_type_is_land(payload.property_type) else _format_count_label(payload.bedrooms, "phòng"),
         "Mặt tiền": _format_meter_label(payload.front_length_m),
         "Đường vào": _format_meter_label(payload.road_size_m),
-        "Số tầng": payload.floors,
-        "Số toilet": payload.toilets,
+        "Số tầng": None if property_type_is_land(payload.property_type) else payload.floors,
+        "Số toilet": None if property_type_is_land(payload.property_type) else payload.toilets,
         "Pháp lý": normalize_legal_status_for_ml(payload.legal_status),
     }
     row.update(_accessibility_feature_values(payload.latitude, payload.longitude))
@@ -114,16 +138,111 @@ def build_prediction_features(payload: PricePredictionInput) -> pd.DataFrame:
     return frame[MODEL_FEATURES]
 
 
-def predict_price(payload: PricePredictionInput, model_path: Path | None = None) -> PricePredictionResult:
+def predict_price(
+    payload: PricePredictionInput,
+    model_path: Path | None = None,
+    *,
+    training_df: pd.DataFrame | None = None,
+) -> PricePredictionResult:
     model, resolved_model_path = load_price_model(model_path)
     features = build_prediction_features(payload)
     price_per_m2 = float(model.predict(features)[0])
     total_price_billion = price_per_m2 * payload.area_m2 / 1000.0
-    return PricePredictionResult(
+    xgboost_estimate = PredictorEstimate(
         price_per_m2_million_vnd=price_per_m2,
         total_price_billion_vnd=total_price_billion,
+        method_name="XGBoost",
+        summary=(
+            "Uses the trained ML model with property details, location, and nearby amenities "
+            "to estimate price per square meter."
+        ),
+        details={
+            "uses_property_attributes": True,
+            "uses_nearby_amenities": True,
+            "uses_nearby_transactions_directly": False,
+        },
+    )
+    idw_estimate = estimate_price_with_idw(payload, training_df=training_df)
+    return PricePredictionResult(
+        xgboost_estimate=xgboost_estimate,
+        idw_estimate=idw_estimate,
         features=features,
         model_path=resolved_model_path,
+    )
+
+
+def estimate_price_with_idw(
+    payload: PricePredictionInput,
+    *,
+    training_df: pd.DataFrame | None,
+    k_neighbors: int = 10,
+    power: float = 2.0,
+    max_distance_m: float = 12_000.0,
+) -> PredictorEstimate | None:
+    if training_df is None or training_df.empty:
+        return None
+
+    comparable = _prepare_idw_training_rows(training_df, payload=payload)
+    if comparable.empty:
+        return None
+
+    comparable_coords = _latlon_to_web_mercator_m(
+        comparable["Latitude"].to_numpy(dtype=float),
+        comparable["Longitude"].to_numpy(dtype=float),
+    )
+    target_coord = _latlon_to_web_mercator_m(
+        np.array([payload.latitude], dtype=float),
+        np.array([payload.longitude], dtype=float),
+    )[0]
+    distances = np.sqrt(((comparable_coords - target_coord) ** 2).sum(axis=1))
+    fallback = float(np.nanmedian(comparable["Giá/m² trị"].to_numpy(dtype=float)))
+    if len(distances) == 0:
+        estimate_value = fallback
+        used_count = 0
+        nearest_distance_m = math.nan
+    else:
+        nearest_count = min(k_neighbors, len(distances))
+        nearest_idx = np.argpartition(distances, nearest_count - 1)[:nearest_count]
+        nearest_distances = distances[nearest_idx]
+        nearest_values = comparable["Giá/m² trị"].to_numpy(dtype=float)[nearest_idx]
+        within_range = nearest_distances <= max_distance_m
+        if within_range.any():
+            nearest_distances = nearest_distances[within_range]
+            nearest_values = nearest_values[within_range]
+            weights = 1.0 / np.maximum(nearest_distances, 1.0) ** power
+            estimate_value = float(np.average(nearest_values, weights=weights))
+            used_count = int(len(nearest_values))
+            nearest_distance_m = float(np.min(nearest_distances))
+        else:
+            estimate_value = fallback
+            used_count = 0
+            nearest_distance_m = float(np.min(distances))
+
+    total_price_billion = estimate_value * payload.area_m2 / 1000.0
+    scope_parts = []
+    if comparable.attrs.get("scope_district"):
+        scope_parts.append(str(comparable.attrs["scope_district"]))
+    if comparable.attrs.get("scope_property_type"):
+        scope_parts.append(str(comparable.attrs["scope_property_type"]))
+    scope_label = ", ".join(scope_parts) if scope_parts else "all comparable listings"
+    summary = (
+        "Interpolates from nearby listing prices, giving more weight to closer listings. "
+        "It is simpler and more location-driven than XGBoost."
+    )
+    return PredictorEstimate(
+        price_per_m2_million_vnd=estimate_value,
+        total_price_billion_vnd=total_price_billion,
+        method_name="IDW Interpolation",
+        summary=summary,
+        details={
+            "scope": scope_label,
+            "comparable_rows": int(len(comparable)),
+            "neighbors_used": int(used_count),
+            "nearest_distance_m": nearest_distance_m,
+            "power": float(power),
+            "max_distance_m": float(max_distance_m),
+            "fallback_used": bool(used_count == 0),
+        },
     )
 
 
@@ -309,21 +428,39 @@ def _accessibility_feature_values(latitude: float, longitude: float) -> dict[str
     for layer, path in ACCESSIBILITY_LAYER_FILES.items():
         prefix = FEATURE_PREFIX_BY_LAYER[layer]
         distance_column = f"dist_nearest_{prefix}_m"
-        count_column = f"{prefix}_count_1000m"
+        count_column = "has_prison_in_500m" if layer == "prisons" else f"{prefix}_count_1000m"
         try:
             pois = load_accessibility_layer(layer).to_crs(METRIC_CRS)
         except (FileNotFoundError, OSError, ValueError):
             result[distance_column] = math.nan
-            result[count_column] = 0
+            if layer == "prisons":
+                result[count_column] = 0
+            elif layer != "ring_roads":
+                result[count_column] = 0
+            if layer == "ring_roads":
+                result["nearest_ring_road_index"] = math.nan
             continue
         pois = pois[pois.geometry.notna()].copy()
         if pois.empty:
             result[distance_column] = math.nan
-            result[count_column] = 0
+            if layer == "prisons":
+                result[count_column] = 0
+            elif layer != "ring_roads":
+                result[count_column] = 0
+            if layer == "ring_roads":
+                result["nearest_ring_road_index"] = math.nan
             continue
         distances = pois.geometry.distance(point_geom)
         result[distance_column] = float(distances.min())
-        result[count_column] = int(pois.geometry.intersects(buffer_geom).sum())
+        if layer == "prisons":
+            prison_buffer = point_geom.buffer(500.0)
+            result[count_column] = int(pois.geometry.intersects(prison_buffer).sum() > 0)
+        elif layer != "ring_roads":
+            result[count_column] = int(pois.geometry.intersects(buffer_geom).sum())
+        if layer == "ring_roads":
+            nearest_idx = int(distances.idxmin()) if len(distances) else None
+            nearest_row = pois.loc[nearest_idx] if nearest_idx is not None and nearest_idx in pois.index else None
+            result["nearest_ring_road_index"] = _extract_ring_road_index(nearest_row)
     return result
 
 
@@ -497,3 +634,71 @@ def _format_count_label(value: str | float | int | None, suffix: str) -> str | N
     except ValueError:
         return text
     return f"{number} {suffix}"
+
+
+def _prepare_idw_training_rows(
+    training_df: pd.DataFrame,
+    *,
+    payload: PricePredictionInput,
+    min_scope_rows: int = 25,
+) -> pd.DataFrame:
+    working = training_df.copy()
+    required_columns = ["Latitude", "Longitude", "Giá/m² trị"]
+    for column in required_columns:
+        if column not in working.columns:
+            return pd.DataFrame(columns=required_columns)
+
+    working["Latitude"] = pd.to_numeric(working["Latitude"], errors="coerce")
+    working["Longitude"] = pd.to_numeric(working["Longitude"], errors="coerce")
+    working["Giá/m² trị"] = pd.to_numeric(working["Giá/m² trị"], errors="coerce")
+    working = working.dropna(subset=["Latitude", "Longitude", "Giá/m² trị"]).copy()
+    working = working[working["Giá/m² trị"] > 0].copy()
+    if working.empty:
+        return working
+
+    scope_district = None
+    scope_property_type = None
+
+    if "Huyện" in working.columns:
+        district_rows = working[working["Huyện"].astype(str) == str(payload.district)].copy()
+        if len(district_rows) >= min_scope_rows:
+            working = district_rows
+            scope_district = payload.district
+
+    payload_property_type = infer_property_type(payload.property_type)
+    if "Loại BĐS" in working.columns:
+        property_rows = working[working["Loại BĐS"].astype(str) == payload_property_type].copy()
+        if len(property_rows) >= min_scope_rows:
+            working = property_rows
+            scope_property_type = payload_property_type
+
+    working.attrs["scope_district"] = scope_district
+    working.attrs["scope_property_type"] = scope_property_type
+    return working
+
+
+def _latlon_to_web_mercator_m(latitudes: np.ndarray, longitudes: np.ndarray) -> np.ndarray:
+    origin_shift = 20_037_508.342789244
+    xs = longitudes * origin_shift / 180.0
+    latitudes = np.clip(latitudes, -85.05112878, 85.05112878)
+    ys = np.log(np.tan((90.0 + latitudes) * math.pi / 360.0)) * origin_shift / math.pi
+    return np.column_stack([xs, ys])
+
+
+def _extract_ring_road_index(row: pd.Series | None) -> float:
+    if row is None:
+        return math.nan
+    text = " ".join(
+        str(row.get(column, "") or "")
+        for column in ["name", "name:vi", "alt_name", "official_name", "ref"]
+    ).casefold()
+    import re
+
+    match = re.search(r"vành\s*đai\s*([235](?:\.[5])?|4|5)|vanh\s*dai\s*([235](?:\.[5])?|4|5)|rr\s*([235](?:\.[5])?|4|5)", text)
+    if not match:
+        return math.nan
+    value = next(group for group in match.groups() if group)
+    try:
+        return float(value)
+    except ValueError:
+        return math.nan

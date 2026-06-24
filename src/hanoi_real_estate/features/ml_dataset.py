@@ -17,6 +17,10 @@ from hanoi_real_estate.analytics import (
     load_dashboard_dataframe,
 )
 from hanoi_real_estate.gis import load_hanoi_districts, normalize_district_name
+from hanoi_real_estate.features.property_features import (
+    add_property_type_features,
+    null_house_only_fields_for_land,
+)
 from hanoi_real_estate.parsers import clean_text
 
 
@@ -102,6 +106,8 @@ def build_clean_ml_base_dataframe(
         working["ward"] = working["ward"].fillna(working["Địa chỉ"].apply(_extract_ward_from_address))
     if "Pháp lý" in working.columns:
         working["Pháp lý"] = working["Pháp lý"].apply(normalize_legal_status_for_ml)
+    working = add_property_type_features(working)
+    working = null_house_only_fields_for_land(working)
 
     discarded_frames: list[pd.DataFrame] = []
     has_stated_district = working["district_stated_normalized"].notna()
@@ -295,6 +301,7 @@ def _finalize_cleaned_columns(df: pd.DataFrame) -> pd.DataFrame:
         "Mức giá trị",
         "Giá/m² trị",
         "Diện tích trị",
+        "Loại BĐS",
         "Số phòng ngủ",
         "Mặt tiền",
         "Đường vào",

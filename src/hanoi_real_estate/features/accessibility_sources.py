@@ -22,6 +22,7 @@ ACCESSIBILITY_LAYER_FILES = {
     "universities": ACCESSIBILITY_DIR / "universities.geojson",
     "high_schools": ACCESSIBILITY_DIR / "high_schools.geojson",
     "hospitals": ACCESSIBILITY_DIR / "hospitals.geojson",
+    "prisons": ACCESSIBILITY_DIR / "prisons.geojson",
     "metro_stations": ACCESSIBILITY_DIR / "metro_stations.geojson",
     "bus_stops": ACCESSIBILITY_DIR / "bus_stops.geojson",
     "major_roads": ACCESSIBILITY_DIR / "major_roads.geojson",
@@ -39,6 +40,12 @@ OSM_TAGS_BY_LAYER: dict[str, dict[str, Any]] = {
     "hospitals": {
         "amenity": "hospital",
         "healthcare": "hospital",
+    },
+    "prisons": {
+        "amenity": "prison",
+        "building": "prison",
+        "landuse": "military",
+        "institution": "prison",
     },
     "metro_stations": {
         "railway": ["station", "subway_entrance"],
@@ -73,6 +80,9 @@ SCALAR_COLUMNS = [
     "official_name",
     "amenity",
     "healthcare",
+    "building",
+    "landuse",
+    "institution",
     "highway",
     "railway",
     "station",
@@ -179,6 +189,8 @@ def clean_accessibility_layer(frame: gpd.GeoDataFrame, layer: str) -> gpd.GeoDat
     working = _clip_to_hanoi_boundary(working)
     if layer == "high_schools":
         working = _filter_high_schools(working)
+    elif layer == "prisons":
+        working = _filter_prisons(working)
     elif layer == "metro_stations":
         working = _filter_metro_stations(working)
     elif layer == "bus_stops":
@@ -208,6 +220,31 @@ def filter_ring_roads(major_roads: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     text = _combined_text_series(working, ["name", "name:vi", "alt_name", "official_name", "ref"])
     ring_pattern = r"vành\s*đai|vanh\s*dai|ring\s*road|beltway|\brr\s*[0-9]"
     return working.loc[text.str.contains(ring_pattern, case=False, regex=True, na=False)].copy()
+
+
+def _filter_prisons(frame: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    text = _combined_text_series(
+        frame,
+        ["name", "name:vi", "alt_name", "official_name", "amenity", "building", "institution"],
+    )
+    prison_mask = (
+        frame.get("amenity", pd.Series(index=frame.index, dtype="object")).astype(str).str.contains(
+            "prison", case=False, na=False
+        )
+        | frame.get("building", pd.Series(index=frame.index, dtype="object")).astype(str).str.contains(
+            "prison", case=False, na=False
+        )
+        | frame.get("institution", pd.Series(index=frame.index, dtype="object")).astype(str).str.contains(
+            "prison", case=False, na=False
+        )
+        | text.str.contains(
+            r"trại\s*tạm\s*giam|trai\s*tam\s*giam|trại\s*giam|trai\s*giam|nhà\s*tù|nha\s*tu|prison|detention",
+            case=False,
+            regex=True,
+            na=False,
+        )
+    )
+    return frame.loc[prison_mask].copy()
 
 
 def write_accessibility_metadata(results: list[AccessibilityLayerResult]) -> None:
@@ -380,4 +417,3 @@ def _import_osmnx():
     ox.settings.log_console = False
     ox.settings.requests_timeout = 180
     return ox
-

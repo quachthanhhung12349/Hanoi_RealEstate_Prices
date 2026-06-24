@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-06-19T15:33:46.520333+00:00",
+  "updated_at": "2026-06-22T10:25:59.699433+00:00",
   "place": "Hanoi, Vietnam",
   "source": "OpenStreetMap via OSMnx/Overpass",
   "layers": [
@@ -8,49 +8,56 @@
       "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/universities.geojson",
       "row_count": 217,
       "source": "cache",
-      "status": "kept_existing"
+      "status": "existing_cache_not_touched"
     },
     {
       "layer": "high_schools",
       "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/high_schools.geojson",
       "row_count": 185,
       "source": "cache",
-      "status": "kept_existing"
+      "status": "existing_cache_not_touched"
     },
     {
       "layer": "hospitals",
       "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/hospitals.geojson",
       "row_count": 188,
       "source": "cache",
-      "status": "kept_existing"
+      "status": "existing_cache_not_touched"
+    },
+    {
+      "layer": "prisons",
+      "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/prisons.geojson",
+      "row_count": 4,
+      "source": "openstreetmap",
+      "status": "refreshed"
     },
     {
       "layer": "metro_stations",
       "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/metro_stations.geojson",
       "row_count": 121,
       "source": "cache",
-      "status": "kept_existing"
+      "status": "existing_cache_not_touched"
     },
     {
       "layer": "bus_stops",
       "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/bus_stops.geojson",
       "row_count": 4979,
       "source": "cache",
-      "status": "kept_existing"
+      "status": "existing_cache_not_touched"
     },
     {
       "layer": "major_roads",
       "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/major_roads.geojson",
       "row_count": 9007,
       "source": "cache",
-      "status": "kept_existing"
+      "status": "existing_cache_not_touched"
     },
     {
       "layer": "ring_roads",
       "path": "/home/linux-mint-cb303/Desktop/UET/Hanoi_RealEstate_Prices/data/gis/accessibility/ring_roads.geojson",
       "row_count": 219,
       "source": "cache",
-      "status": "kept_existing"
+      "status": "existing_cache_not_touched"
     }
   ]
 }
